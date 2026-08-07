@@ -1,0 +1,68 @@
+# Secrets & local env
+.env
+.env.*
+!.env.example
+backend/.env
+frontend/.env
+
+# Python
+env/
+.venv/
+venv/
+**/__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+*.log
+
+# Node
+frontend/node_modules/
+frontend/dist/
+frontend/dist-ssr/
+
+# Local vector DB & SQLite (rebuild via scripts)
+qdrant_local/
+**/qdrant_local/
+**/qdrant_local.bak/
+rag/qdrant_local
+backend/rag/qdrant_local/
+backend/data/qdrant/
+**/fitness.db
+**/*.db
+*.db-journal
+
+# Nested media dataset (separate; too large)
+data/hasaneyldrm-exercises-dataset/
+
+# Accidental duplicate folders
+**/structured (Copy)/
+
+# Large / regenerated dumps (rebuild with backend scripts)
+exercises.json
+**/exercises.json
+INDB.xlsx
+**/INDB.xlsx
+**/*exercises_merged.json
+**/all_chunks.json
+**/chunks/
+*.pdf
+
+# Keep small schema examples if any
+!**/exercises.schema.json
+
+# OS / IDE
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+
+# Eval / agent temp
+.tmp/
+.temp/
+**/agent-transcripts/
+
+# Archives
+main_scripts.zip
+*.zip

@@ -1,0 +1,8 @@
+{"id": "g1", "query": "carbohydrate intake for diabetes blood sugar India", "must_contain_any": ["carbohydrate", "diabetes", "blood sugar", "glycemic", "glucose"], "content_types": ["nutrition", "guideline"]}
+{"id": "g2", "query": "protein requirements vegetarian Indian diet ICMR", "must_contain_any": ["protein", "pulse", "dal", "vegetarian"], "content_types": ["nutrition", "guideline"]}
+{"id": "g3", "query": "exercise safety high blood pressure hypertension", "must_contain_any": ["blood pressure", "hypertension", "intensity"], "content_types": ["safety_medical", "guideline", "exercise"]}
+{"id": "g4", "query": "physical activity guidelines adults WHO minutes per week", "must_contain_any": ["150", "moderate", "physical activity", "minute"], "content_types": ["guideline", "exercise"]}
+{"id": "g5", "query": "reduce bloating digestion sodium Indian foods", "must_contain_any": ["sodium", "salt", "fibre", "fiber", "digest"], "content_types": ["nutrition", "guideline"]}
+{"id": "g6", "query": "calorie deficit weight loss diet India", "must_contain_any": ["calorie", "energy", "weight", "obesity"], "content_types": ["nutrition", "guideline"]}
+{"id": "g7", "query": "strength training frequency muscle older adults", "must_contain_any": ["muscle", "strength", "resist", "week"], "content_types": ["guideline", "exercise"]}
+{"id": "g8", "query": "hydration water intake daily recommendation", "must_contain_any": ["water", "fluid", "hydrat"], "content_types": ["nutrition", "guideline"]}

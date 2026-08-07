@@ -1,0 +1,7 @@
+{"id": "a1", "message": "I am a 54 year old male diabetic", "expect_age": 54, "expect_gender": "male", "expect_health_flags_any": ["diabetes"]}
+{"id": "a2", "message": "build biceps without any equipment", "expect_equipment_any": ["body only"]}
+{"id": "a3", "message": "full body (which covers all regions)", "expect_body_parts_count_min": 8}
+{"id": "a4", "message": "my target is core and cardio", "expect_body_parts_any": ["waist", "cardio"]}
+{"id": "a5", "message": "how much carbs for a diabetic patient", "expect_diet_intent": true}
+{"id": "a6", "message": "good exercises for lower back pain", "expect_diet_intent": false}
+{"id": "a7", "message": "im 50 year , woman , 60 kg , to lower cholestral , a healthy diet plan is required", "expect_age": 50, "expect_gender": "female", "expect_diet_only": true}

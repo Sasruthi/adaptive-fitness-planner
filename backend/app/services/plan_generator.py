@@ -304,6 +304,47 @@ def _normalize_safety_notes(notes: Optional[List]) -> List[Dict]:
     return [_as_safety_note(n) for n in (notes or [])]
 
 
+def _calorie_target_for_profile(profile: Dict) -> Optional[Dict]:
+    """
+    Mifflin–St Jeor target from profile (with India age/sex size fallback).
+    Independent of the LLM enrichment call — safe to keep on enrichment failure.
+    """
+    sex = profile.get("sex") or profile.get("gender") or ""
+    age = profile.get("age")
+    anthro = resolve_height_weight(
+        age=age,
+        sex=sex,
+        height_cm=profile.get("height_cm"),
+        weight_kg=profile.get("weight_kg"),
+    )
+    weight = anthro.get("weight_kg")
+    height = anthro.get("height_cm")
+    size_estimated = bool(anthro.get("height_estimated") or anthro.get("weight_estimated"))
+    if not (age and weight and height and sex):
+        return None
+    activity = _resolve_activity_level(
+        profile.get("activity_level"),
+        profile.get("fitness_level"),
+    )
+    try:
+        calorie_target = calculate_calories(
+            age=age, sex=sex, weight_kg=weight, height_cm=height,
+            activity_level=activity,
+            goal=profile.get("goal", "general_fitness"),
+        )
+    except Exception as e:
+        print(f"[Plan] calorie target calc skipped ({e})")
+        return None
+    if size_estimated and calorie_target:
+        calorie_target["estimated_from_age_sex"] = True
+        calorie_target["anthropometrics_source"] = anthro.get("anthropometrics_source")
+        calorie_target["assumed_height_cm"] = height
+        calorie_target["assumed_weight_kg"] = weight
+        calorie_target["height_estimated"] = anthro.get("height_estimated")
+        calorie_target["weight_estimated"] = anthro.get("weight_estimated")
+    return calorie_target
+
+
 def synthesize_plan(
     profile: Dict,
     week_plan: List[Dict],
@@ -344,28 +385,7 @@ def synthesize_plan(
     height = anthro.get("height_cm")
     size_estimated = bool(anthro.get("height_estimated") or anthro.get("weight_estimated"))
 
-    # Activity: map fitness_level / common aliases → Mifflin multipliers keys
-    activity = _resolve_activity_level(
-        profile.get("activity_level"),
-        profile.get("fitness_level"),
-    )
-    calorie_target = None
-    if age and weight and height and sex:
-        try:
-            calorie_target = calculate_calories(
-                age=age, sex=sex, weight_kg=weight, height_cm=height,
-                activity_level=activity,
-                goal=profile.get("goal", "general_fitness"),
-            )
-            if size_estimated and calorie_target:
-                calorie_target["estimated_from_age_sex"] = True
-                calorie_target["anthropometrics_source"] = anthro.get("anthropometrics_source")
-                calorie_target["assumed_height_cm"] = height
-                calorie_target["assumed_weight_kg"] = weight
-                calorie_target["height_estimated"] = anthro.get("height_estimated")
-                calorie_target["weight_estimated"] = anthro.get("weight_estimated")
-        except Exception as e:
-            print(f"[Plan] calorie target calc skipped ({e})")
+    calorie_target = _calorie_target_for_profile(profile)
     if calorie_target:
         est_note = ""
         if size_estimated:
@@ -382,8 +402,8 @@ def synthesize_plan(
     else:
         calorie_target_note = "not available — insufficient profile data"
 
-    size_line = f"{weight}kg / {height}cm"
-    if size_estimated:
+    size_line = f"{weight}kg / {height}cm" if weight and height else "unknown"
+    if size_estimated and weight and height:
         size_line += " (partially/fully estimated from India age–sex midpoints)"
 
     prompt = f"""You are an expert India-focused fitness and nutrition planner.
@@ -668,6 +688,8 @@ def generate_plan(
         )
 
     enrichment_failed = False
+    # Compute BMR outside the LLM try — keep it if enrichment crashes
+    fallback_calorie_target = _calorie_target_for_profile(profile)
     try:
         llm = get_llm(temperature=0.4, max_tokens=3000)
         enrichment = synthesize_plan(profile, week_plan, guidelines, llm)
@@ -687,7 +709,8 @@ def generate_plan(
             ],
             "citations": [],
             "weekly_tips": [],
-            "_calorie_target": None,
+            # Preserve Mifflin targets even when meal enrichment fails
+            "_calorie_target": fallback_calorie_target,
         }
 
     try:

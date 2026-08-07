@@ -59,6 +59,7 @@ async def message(req: UserMessageRequest):
             slots_complete=result.get("slots_complete", False),
             profile=result.get("profile") or None,
             plan=result.get("plan") or None,
+            plan_id=result.get("plan_id"),
             sql_filters=result.get("sql_filters") or None,
             rag_filters=result.get("rag_filters") or None,
             exercises=result.get("exercises") or None,

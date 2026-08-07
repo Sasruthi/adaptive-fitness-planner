@@ -28,6 +28,7 @@ class ConversationResponse(BaseModel):
     slots_complete: bool = False
     profile:        Optional[Dict[str, Any]] = None
     plan:           Optional[Dict[str, Any]] = None
+    plan_id:        Optional[int] = None
     sql_filters:    Optional[Dict[str, Any]] = None
     rag_filters:    Optional[Dict[str, Any]] = None
     # Semantically matched exercises (with gif_url/image_url) for chat media cards

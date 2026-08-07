@@ -157,25 +157,62 @@ def _equipment_ok(ex_eq: str, allowed: Optional[List[str]], *, name: str = "", d
     return False
 
 
+def _body_part_excluded(ex_bp: str, ex_target: str, excluded: Optional[List[str]]) -> bool:
+    """True if exercise region overlaps an injury-excluded body part."""
+    if not excluded:
+        return False
+    hay = f"{_norm(ex_bp)} {_norm(ex_target)}"
+    for e in excluded:
+        en = _norm(e)
+        syns = _BODY_PART_SYNONYMS.get(en, [en])
+        if any(s in hay for s in syns if s):
+            return True
+    return False
+
+
+# Name/description tokens commonly unsafe for a health flag (hard filter for Q&A cards)
+_INJURY_NAME_BANS = {
+    "knee_injury":     ["squat", "lunge", "jump", "running", "leg press", "step-up", "step up"],
+    "ankle_injury":    ["jump", "running", "hop", "calf raise", "box jump"],
+    "back_injury":     ["deadlift", "barbell row", "good morning", "hyperextension", "superman"],
+    "shoulder_injury": ["overhead press", "military press", "upright row", "dip", "pull-up", "pull up"],
+    "wrist_injury":    ["push-up", "push up", "plank", "handstand", "burpee"],
+    "high_bp":         ["valsalva", "isometric hold", "max squat", "heavy deadlift"],
+    "pregnancy":       ["crunch", "sit-up", "sit up", "plank", "supine", "twist"],
+}
+
+
+def _injury_name_banned(name: str, description: str, health_flags: Optional[List[str]]) -> bool:
+    if not health_flags:
+        return False
+    blob = f"{_norm(name)} {_norm(description)}"
+    for flag in health_flags:
+        for token in _INJURY_NAME_BANS.get(flag, []):
+            if _norm(token) in blob:
+                return True
+    return False
+
+
 def retrieve_exercise_semantic(
     query: str,
     top_k: int = 5,
     *,
     equipment: Optional[List[str]] = None,
     body_parts: Optional[List[str]] = None,
+    exclude_body_parts: Optional[List[str]] = None,
+    health_flags: Optional[List[str]] = None,
     prefer_media: bool = True,
     prefer_difficulty: Optional[str] = None,
     relax_filters_on_empty: bool = False,
 ) -> List[Dict]:
     """
     Semantic search over exercise name+description+muscle, then apply
-    profile constraints (equipment / body parts). Prefers rows with media
-    so the frontend can render GIFs/images for the chosen exercises.
+    profile constraints (equipment / body parts / injury exclusions).
+    Prefers rows with media so the frontend can render GIFs/images.
 
-    Equipment is a HARD filter by default. Difficulty is a SOFT preference:
-    `prefer_difficulty="beginner"` re-ranks matching / blank difficulty
-    above expert moves — it does not hard-exclude (many catalog rows have
-    null difficulty).
+    Equipment is a HARD filter by default. Injury excludes (body parts +
+    name bans) are always hard and are kept even when relax_filters_on_empty
+    widens equipment/body_parts. Difficulty is a SOFT preference.
     """
     try:
         client = get_qdrant()
@@ -205,6 +242,10 @@ def retrieve_exercise_semantic(
             if not _equipment_ok(eq, equipment, name=name, description=description):
                 continue
             if not _body_part_ok(bp, target, body_parts):
+                continue
+            if _body_part_excluded(bp, target, exclude_body_parts):
+                continue
+            if _injury_name_banned(name, description, health_flags):
                 continue
             if want_diff == "beginner" and _is_advanced_skill(name, description):
                 continue
@@ -251,11 +292,14 @@ def retrieve_exercise_semantic(
             and (equipment or body_parts)
             and not _is_bodyweight_only_filter(equipment)
         ):
+            # Widen equipment/region only — NEVER drop injury exclusions
             return retrieve_exercise_semantic(
                 query,
                 top_k=top_k,
                 equipment=None,
                 body_parts=None,
+                exclude_body_parts=exclude_body_parts,
+                health_flags=health_flags,
                 prefer_media=prefer_media,
                 prefer_difficulty=prefer_difficulty,
                 relax_filters_on_empty=False,

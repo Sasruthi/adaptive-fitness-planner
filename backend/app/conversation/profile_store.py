@@ -379,6 +379,7 @@ class SessionStore:
         self._plans: Dict[str, dict] = {}
         self._plan_confirmed: Dict[str, bool] = {}
         self._exercises: Dict[str, list] = {}
+        self._saved_plan_ids: Dict[str, int] = {}
 
     def get_profile(self, thread_id: str) -> Profile:
         if thread_id not in self._profiles:
@@ -390,6 +391,18 @@ class SessionStore:
 
     def get_plan(self, thread_id: str) -> Optional[dict]:
         return self._plans.get(thread_id)
+
+    def set_saved_plan_id(self, thread_id: str, plan_id: Optional[int]):
+        if plan_id is None:
+            self._saved_plan_ids.pop(thread_id, None)
+        else:
+            try:
+                self._saved_plan_ids[thread_id] = int(plan_id)
+            except (TypeError, ValueError):
+                pass
+
+    def get_saved_plan_id(self, thread_id: str) -> Optional[int]:
+        return self._saved_plan_ids.get(thread_id)
 
     def set_exercises(self, thread_id: str, exercises: list):
         self._exercises[thread_id] = exercises or []

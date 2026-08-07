@@ -35,7 +35,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.prebuilt import create_react_agent
 
 from app.conversation.profile_store import session_store, Profile
-from app.conversation.state import build_sql_filters, build_rag_filters
+from app.conversation.state import build_sql_filters, build_rag_filters, injury_excluded_body_parts
 from app.services.rag_retrieval import retrieve_multi_query
 from app.services.exercise_rag import retrieve_exercise_semantic
 from app.services.plan_agent import generate_plan_agentic
@@ -173,16 +173,28 @@ def answer_fitness_question(query: str) -> str:
             + (f" for {region}" if region else "")
             + demo_ctx
         )
+        # Hard injury filters — same map as plan SQL (never show contraindicated cards)
+        injury_excl = injury_excluded_body_parts(profile.health_flags or [])
+        flags_for_ban = [f for f in (profile.health_flags or []) if f != "none"]
+        # If the asked region is entirely injury-excluded, drop region filter
+        # so we can still suggest safe alternatives elsewhere.
+        safe_body_parts = body_parts
+        if body_parts and injury_excl:
+            excl_l = {e.lower() for e in injury_excl}
+            safe_body_parts = [b for b in body_parts if b.lower() not in excl_l] or None
         exercise_hits = [
             _normalize_exercise_for_ui(e)
             for e in retrieve_exercise_semantic(
                 ex_query,
                 top_k=4,
                 equipment=equipment,
-                body_parts=body_parts,
+                body_parts=safe_body_parts,
+                exclude_body_parts=injury_excl or None,
+                health_flags=flags_for_ban or None,
                 prefer_media=True,
                 prefer_difficulty=prefer_diff,
-                relax_filters_on_empty=bool(body_parts),  # if region filter empty, widen once
+                # Widen equipment/region only — injury excludes stay on
+                relax_filters_on_empty=bool(safe_body_parts),
             )
         ]
     session_store.set_exercises(thread_id, exercise_hits)
@@ -195,6 +207,13 @@ def answer_fitness_question(query: str) -> str:
             f"out or clearly flag any exercise/activity below that's commonly "
             f"contraindicated for these conditions."
         )
+        if want_exercises:
+            excl = injury_excluded_body_parts(profile.health_flags or [])
+            if excl:
+                parts.append(
+                    f"HARD FILTER APPLIED: excluded body parts {excl} and injury-related "
+                    "move names from the demo list. Do not recommend those regions/moves."
+                )
     known_bits = []
     if profile.age: known_bits.append(f"age={profile.age}")
     if profile.gender: known_bits.append(f"gender={profile.gender}")
@@ -443,6 +462,8 @@ def save_generated_plan(user_email: str, user_name: str) -> str:
         goal=profile.goal or "general_fitness",
         plan_json=_json.dumps(plan), constraints_json="{}",
     )
+    if isinstance(result, dict) and result.get("success") and result.get("plan_id") is not None:
+        session_store.set_saved_plan_id(thread_id, result["plan_id"])
     return str(result)
 
 
@@ -582,6 +603,7 @@ def process_user_message(user_message: str, thread_id: str) -> dict:
         "slots_complete": not profile.missing_fields(),
         "profile": profile.to_dict(),
         "plan": plan,
+        "plan_id": session_store.get_saved_plan_id(thread_id),
         "sql_filters": sql_filters,
         "rag_filters": rag_filters,
         "exercises": exercises,

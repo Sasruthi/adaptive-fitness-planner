@@ -137,7 +137,7 @@ export default function ChatPage({
       // Offer save only when a plan actually arrives.
       if (data.plan) {
         setPendingData(data)
-        setTimeout(() => onPlanReady(data.plan, null, userEmail), 400)
+        setTimeout(() => onPlanReady(data.plan, data.plan_id ?? null, userEmail), 400)
       }
     } catch {
       addBot("Something went wrong — please try again.")

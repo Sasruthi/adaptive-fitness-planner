@@ -116,6 +116,9 @@ GROQ_MODEL=llama-3.3-70b-versatile
 
 ### 2. Data pipeline (first time)
 
+Large indexes, PDFs, exercise JSON dumps, and media are **not** in this git
+repo (see `.gitignore`). Rebuild locally:
+
 Exercises and guidelines are **separate** pipelines:
 
 ```bash

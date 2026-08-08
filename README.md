@@ -1,6 +1,6 @@
 # Adaptive Fitness Planner
 
-India-first personalised fitness assistant: chat to collect a profile, answer questions with guideline RAG, retrieve real exercises (with media), and generate a weekly workout + diet plan grounded in filters, Mifflin–St Jeor calories, and Indian nutrient data.
+India-based personalised fitness assistant: chat to collect a profile, answer questions with guideline RAG, retrieve real exercises (with media), and generate a weekly workout + diet plan grounded in filters, Mifflin–St Jeor calories, and Indian nutrient data.
 
 ---
 
@@ -9,7 +9,7 @@ India-first personalised fitness assistant: chat to collect a profile, answer qu
 | Capability | Description |
 |------------|-------------|
 | **Conversational intake** | LangGraph ReAct agent collects goal, body parts, equipment, health flags, etc. |
-| **Q&A with RAG** | Answers nutrition / guideline questions from India-first PDF sources (ICMR-NIN, WHO, FSSAI, Fit India, …) |
+| **Q&A with RAG** | Answers nutrition / guideline questions from India-based PDF sources (ICMR-NIN, WHO, FSSAI, Fit India, …) |
 | **Exercise demos** | Semantic + SQL retrieval over a merged exercise catalog (GIF / image / video when available) |
 | **Weekly plans** | Deterministic plan engine (injury filters, equipment, split) + LLM enrichment + INDB meal grounding |
 | **Diet calories** | Mifflin–St Jeor BMR/TDEE; if height/weight missing, uses India age/sex midpoints (marked approximate) |
@@ -38,8 +38,6 @@ LangGraph conversation agent (ReAct + tools)
         └── Optional PLAN_AGENTIC=1: second LangGraph retrieve/validate loop
             (draft discarded; final plan always from plan_generator)
 ```
-
-**Design rule:** the LLM chooses *when* to call tools; **code** enforces safety (health flags, injury body-part excludes, no fabricated plans without `generate_plan`).
 
 ### Two LangGraphs
 
@@ -70,20 +68,17 @@ adaptive-fitness-planner/
 │   └── scripts/             # Exercise corpus build + load_db
 ├── frontend/                # Vite + React + Tailwind
 ├── evals/                   # RAG / exercise / agent slot evals
-├── data/                    # Guideline sources, media (often gitignored if large)
+├── data/                    # Guideline sources, media
 ├── main_scripts/            # Curated code snapshot + MODULE_DOCUMENTATION.md
 └── SETUP_AND_TEST_GUIDE.md  # Detailed data-pipeline runbook
 ```
 
-Deeper docs: `main_scripts/MODULE_DOCUMENTATION.md` and `main_scripts/MODULE_OUTLINE.md`.
-
----
 
 ## Prerequisites
 
 - Python 3.10+
 - Node.js 18+ (frontend)
-- Groq API key (default LLM) — optional Azure OpenAI failover
+- Groq API key (default LLM)
 - Disk space for Qdrant indexes and exercise media (local)
 
 ---
@@ -107,17 +102,10 @@ GROQ_API_KEY=your_key_here
 GROQ_MODEL=llama-3.3-70b-versatile
 
 # Optional
-# PLAN_AGENTIC=0
-# SEMANTIC_LLM_EXTRACT=0
-# AZURE_OPENAI_API_KEY=...
-# AZURE_OPENAI_ENDPOINT=...
 # SMTP_HOST=... SMTP_USER=... SMTP_PASS=...
 ```
 
-### 2. Data pipeline (first time)
-
-Large indexes, PDFs, exercise JSON dumps, and media are **not** in this git
-repo (see `.gitignore`). Rebuild locally:
+### 2. Data pipeline 
 
 Exercises and guidelines are **separate** pipelines:
 
@@ -136,7 +124,6 @@ python rag/embed_and_store.py
 # python -m app.scripts.load_nutrition_db
 ```
 
-See `SETUP_AND_TEST_GUIDE.md` for expected counts and troubleshooting.
 
 ### 3. Run API
 
@@ -168,7 +155,6 @@ Open the URL Vite prints (usually http://localhost:5173) → **Chat** tab.
 3. When slots + health flags are complete → `generate_plan` builds week + diet  
 4. Optional save/email → Plan & Progress tabs  
 
-Programmatic plan without chat: `POST /api/plan/generate`.
 
 ---
 
@@ -215,12 +201,4 @@ Measures Hit@k / MRR, generation groundedness, exercise compliance, and NLU slot
 
 ---
 
-## License / data
 
-Exercise media and third-party datasets may have their own licenses (see `data/hasaneyldrm-exercises-dataset/NOTICE.md` if present). Guideline PDFs remain subject to their publishers’ terms. This application code is provided for the Adaptive Fitness Planner project.
-
----
-
-## Author
-
-Maintained for handoff / development — contact: **sasruthikumar@gmail.com**

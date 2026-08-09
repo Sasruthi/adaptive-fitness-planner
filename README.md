@@ -1,6 +1,6 @@
 # Adaptive Fitness Planner
 
-India-first personalised fitness assistant. Users chat in natural language; the system collects a safe profile, answers guideline-grounded questions (with demo media when useful), and builds a weekly workout + diet plan.
+Personalised fitness assistant. Users chat in natural language; the system collects a safe profile, answers guideline-grounded questions (with demo media when useful), and builds a weekly workout + diet plan.
 
 ---
 

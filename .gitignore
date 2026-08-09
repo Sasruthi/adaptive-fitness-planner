@@ -52,15 +52,15 @@ backend/data/qdrant/
 **/*.db
 *.db-journal
 
-# Nested media dataset (separate; too large)
+# Unused / duplicate data relocated from data/ (do not commit)
+stale_data/
+
+# Nested media dataset (too large for git — clone/symlink separately)
 data/hasaneyldrm-exercises-dataset/
 
 # Extracted guideline PDF demos (rebuild via backend/rag/extract_pdf_images.py)
 backend/static/guideline_images/
 **/guideline_images/
-
-# Accidental duplicate folders
-**/structured (Copy)/
 
 # Large / regenerated dumps (rebuild with backend scripts)
 exercises.json
@@ -69,12 +69,16 @@ INDB.xlsx
 **/INDB.xlsx
 **/*exercises_merged.json
 **/all_chunks.json
+**/pdf_images_map.json
 **/chunks/
+data/adaptive-fitness-planner-data/chunks/
+
+# PDFs: ignore globally, but track guideline sources under data/
 *.pdf
+!data/**/*.pdf
 
 # Keep small schema examples if any
 !**/exercises.schema.json
-
 # OS / IDE
 .DS_Store
 .idea/

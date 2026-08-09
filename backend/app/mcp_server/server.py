@@ -713,10 +713,13 @@ def _build_full_plan_email_html(
         dtype = (day.get("type") or "workout").lower()
         note = _esc(day.get("note") or day.get("day_note") or "")
         if dtype == "rest":
+            note_html = (
+                f'<p style="color:#666;font-size:13px;margin:0">{note}</p>' if note else ""
+            )
             day_blocks.append(
                 f'<div style="border:1px solid #e5e7eb;border-radius:8px;padding:12px;margin:12px 0">'
-                f"<h3 style=\"margin:0 0 6px;color:#2c7a4b\">{label} — Rest</h3>"
-                f"{f'<p style=\"color:#666;font-size:13px;margin:0\">{note}</p>' if note else ''}"
+                f'<h3 style="margin:0 0 6px;color:#2c7a4b">{label} — Rest</h3>'
+                f"{note_html}"
                 f"</div>"
             )
             continue
@@ -761,24 +764,34 @@ def _build_full_plan_email_html(
                     f'<p style="font-size:11px;color:#999;margin-top:6px">'
                     f"Demo unavailable to embed (missing/oversized file).</p>"
                 )
+            meta_html = (
+                f'<br><span style="font-size:12px;color:#666">{meta}</span>' if meta else ""
+            )
+            instr_html = (
+                f'<br><span style="font-size:12px;color:#444">{instr}</span>' if instr else ""
+            )
+            tip_html = (
+                f'<br><em style="font-size:12px;color:#2c7a4b">{tip}</em>' if tip else ""
+            )
             ex_rows.append(
                 f'<tr><td style="padding:12px 0;border-top:1px solid #f0f0f0;vertical-align:top">'
-                f"<strong style=\"color:#111\">{name}</strong>"
-                f"{f'<br><span style=\"font-size:12px;color:#666\">{meta}</span>' if meta else ''}"
-                f"{f'<br><span style=\"font-size:12px;color:#444\">{instr}</span>' if instr else ''}"
-                f"{f'<br><em style=\"font-size:12px;color:#2c7a4b\">{tip}</em>' if tip else ''}"
+                f'<strong style="color:#111">{name}</strong>'
+                f"{meta_html}{instr_html}{tip_html}"
                 f"{media_html}"
                 f"</td></tr>"
             )
 
         exercises_table = (
-            f"<table width=\"100%\" cellpadding=\"0\" cellspacing=\"0\">{''.join(ex_rows)}</table>"
-            if ex_rows else "<p style=\"color:#888;font-size:13px\">No exercises listed.</p>"
+            f'<table width="100%" cellpadding="0" cellspacing="0">{"".join(ex_rows)}</table>'
+            if ex_rows else '<p style="color:#888;font-size:13px">No exercises listed.</p>'
+        )
+        note_html = (
+            f'<p style="color:#666;font-size:13px;margin:0 0 8px">{note}</p>' if note else ""
         )
         day_blocks.append(
             f'<div style="border:1px solid #e5e7eb;border-radius:8px;padding:12px;margin:12px 0">'
-            f"<h3 style=\"margin:0 0 6px;color:#2c7a4b\">{label}</h3>"
-            f"{f'<p style=\"color:#666;font-size:13px;margin:0 0 8px\">{note}</p>' if note else ''}"
+            f'<h3 style="margin:0 0 6px;color:#2c7a4b">{label}</h3>'
+            f"{note_html}"
             f"{exercises_table}"
             f"</div>"
         )
@@ -843,13 +856,24 @@ def _build_full_plan_email_html(
                 f"<p style=\"font-size:11px;color:#999;margin:0\">INDB: "
                 f"{_esc(meal['matched_food'])}</p>"
             )
+        timing_html = (
+            f' <span style="color:#888;font-size:12px">{timing}</span>' if timing else ""
+        )
+        sug_block = (
+            f'<ul style="margin:6px 0;padding-left:18px;font-size:13px;color:#333">{sug_html}</ul>'
+            if sug_html else ""
+        )
+        notes_html = (
+            f'<p style="font-size:12px;color:#666;font-style:italic;margin:4px 0 0">{notes}</p>'
+            if notes else ""
+        )
         meal_blocks.append(
             f'<div style="border-left:3px solid #2c7a4b;padding:8px 12px;margin:10px 0;background:#fafafa">'
             f"<strong>{title}</strong>"
-            f"{f' <span style=\"color:#888;font-size:12px\">{timing}</span>' if timing else ''}"
+            f"{timing_html}"
             f"{nut_html}{matched}"
-            f"{f'<ul style=\"margin:6px 0;padding-left:18px;font-size:13px;color:#333\">{sug_html}</ul>' if sug_html else ''}"
-            f"{f'<p style=\"font-size:12px;color:#666;font-style:italic;margin:4px 0 0\">{notes}</p>' if notes else ''}"
+            f"{sug_block}"
+            f"{notes_html}"
             f"</div>"
         )
 
@@ -876,9 +900,9 @@ def _build_full_plan_email_html(
             flag = _esc(s.get("flag") or "note")
             note = _esc(s.get("note") or "")
             cite = _esc(s.get("citation") or "")
+            cite_html = f' <em style="color:#888">({cite})</em>' if cite else ""
             safety_items.append(
-                f"<li><strong>{flag}</strong> — {note}"
-                f"{f' <em style=\"color:#888\">({cite})</em>' if cite else ''}</li>"
+                f"<li><strong>{flag}</strong> — {note}{cite_html}</li>"
             )
         else:
             safety_items.append(f"<li>{_esc(s)}</li>")

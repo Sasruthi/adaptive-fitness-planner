@@ -1,18 +1,5 @@
-fastapi==0.139.0
-uvicorn[standard]
-sqlalchemy
-qdrant-client
-sentence-transformers
-langgraph
-langchain-groq
-langchain-openai
-groq
-langchain-core
-python-dotenv
-pymupdf
-numpy
-mcp
-httpx
-python-multipart
-pandas
-openpyxl
+# Install from repo root (canonical):
+#   pip install -r requirements.txt
+#
+# This file exists for `cd backend && pip install -r requirements.txt` convenience.
+-r ../requirements.txt

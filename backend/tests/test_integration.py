@@ -118,90 +118,55 @@ except Exception as e:
 
 # ══════════════════════════════════════════════════════════════════════════════
 print("\n" + "="*60)
-print("MODULE 3 — Conversational Intake (LangGraph)")
+print("MODULE 3 — Profile store + agent greeting (unified agent)")
 print("="*60)
-
-STAGE_MOCK = {
-    "greeting":
-        "Hi! I'm your Adaptive Fitness Planner. What is your main fitness goal?",
-    "collect_goal":
-        '{"goal":"lose_fat","raw_phrase":"reduce arm fat","confidence":"high","clarification_needed":false,"reply":"Great — fat loss! Which body area?"}',
-    "collect_body_part":
-        '{"body_parts":["upper arms"],"raw_phrases":["arm fat, back of arms"],"has_unmapped":false,"unmapped_parts":[],"reply":"Upper arms — noted. Sex and age?"}',
-    "collect_demographics":
-        '{"age":28,"sex":"female","height_cm":162,"weight_kg":60,"reply":"Got it! Any health conditions?"}',
-    "collect_health_flags":
-        '{"known_flags":["high_bp"],"custom_conditions":[],"has_critical":true,"reply":"Noted — BP-safe exercises. What equipment?"}',
-    "collect_equipment":
-        '{"equipment":["none"],"unrecognised_equipment":[],"reply":"Bodyweight only. Fitness level?"}',
-    "collect_fitness_level":
-        '{"fitness_level":"beginner","reply":"Beginner noted. How much time per day?"}',
-    "collect_time":
-        '{"time_minutes":30}',
-    "confirm_profile":
-        "✅ Goal: Lose fat\n✅ Focus: Upper arms\n✅ Age/Sex: 28F\n✅ Health: High BP\n✅ Equipment: Bodyweight\n✅ Level: Beginner\n✅ Time: 30min\n\nType 'yes' to generate your plan.",
-}
-
-def m3_mock(messages):
-    s = messages[0].content if messages else ""
-    if   "canonical goals"     in s: stage = "collect_goal"
-    elif "canonical body parts"in s: stage = "collect_body_part"
-    elif "height_cm"           in s: stage = "collect_demographics"
-    elif "KNOWN_HEALTH_FLAGS"  in s or "known flags" in s: stage = "collect_health_flags"
-    elif "canonical equipment" in s: stage = "collect_equipment"
-    elif "fitness level"       in s and "beginner" in s: stage = "collect_fitness_level"
-    elif "time per day"        in s: stage = "collect_time"
-    elif "profile summary"     in s or "checkmarks" in s: stage = "confirm_profile"
-    else:                            stage = "greeting"
-    r = MagicMock()
-    r.content = STAGE_MOCK.get(stage, '{"reply":"Got it!"}')
-    return r
+# Old intake_graph FSM removed — conversation is LangGraph ReAct in agent.py.
+# Module 3 checks code-level safety gates + start_conversation (no LLM needed).
 
 m3_final = None
 try:
-    with patch('app.llm.ChatGroq') as MockLLM:
-        MockLLM.return_value.invoke.side_effect = m3_mock
+    from app.conversation.agent import start_conversation
+    from app.conversation.profile_store import Profile, session_store
+    from app.conversation.state import build_sql_filters, build_rag_filters
 
-        from app.conversation.intake_graph import start_conversation, process_user_message
-        from app.conversation.state import slots_complete
+    tid = str(uuid.uuid4())
+    r = start_conversation(tid)
+    check("Greeting runs", r.get("message") != "", r.get("stage"))
 
-        tid = str(uuid.uuid4())
-        r = start_conversation(tid)
-        check("Greeting runs",       r.get("message") != "", r.get("stage"))
+    incomplete = Profile(goal="lose_fat", age=28, gender="female")
+    check("Unsafe without health_flags", not incomplete.is_safe_to_plan(),
+          str(incomplete.missing_fields()))
 
-        turns = [
-            "I want to reduce my arm fat",
-            "upper arms, back of arms",
-            "female, 28, 162cm, 60kg",
-            "I have high blood pressure",
-            "no equipment, home workout",
-            "I am a beginner",
-            "30 minutes",
-            "yes",
-        ]
+    # "full body" must expand (historical deadlock fix)
+    p = Profile()
+    merged = p.merge(
+        goal="lose_fat",
+        target_body_parts=["full body"],
+        age=28,
+        gender="female",
+        health_flags=["high_bp"],
+        available_equipment=["no equipment"],
+        fitness_level="beginner",
+        time_per_day_minutes=30,
+    )
+    check("full body expands", len(p.target_body_parts) >= 8, str(p.target_body_parts))
+    check("equipment alias → body only", "body only" in (p.available_equipment or []),
+          str(p.available_equipment))
+    check("Safe when slots complete", p.is_safe_to_plan(), str(p.missing_fields()))
+    check("merge has no hard rejects", not merged.get("rejected"), str(merged.get("rejected")))
 
-        final_r = None
-        for msg in turns:
-            r = process_user_message(msg, tid)
-            if r.get("slots_complete"):
-                final_r = r
-                break
+    sql_f = build_sql_filters(p.to_dict())
+    rag_f = build_rag_filters(p.to_dict())
+    check("SQL filters built", bool(sql_f), str(sql_f))
+    check("RAG filters built", bool(rag_f), str(rag_f))
 
-        check("All slots filled",          final_r is not None)
-
-        if final_r:
-            p = final_r.get("profile", {})
-            check("Goal extracted",         p.get("goal") == "lose_fat",           p.get("goal"))
-            check("Body parts correct",     "upper arms" in p.get("target_body_parts",[]), str(p.get("target_body_parts")))
-            check("Age extracted",          p.get("age") == 28,                    str(p.get("age")))
-            check("Sex extracted",          p.get("sex") == "female",              p.get("sex"))
-            check("Health flag captured",   "high_bp" in p.get("health_flags",[]), str(p.get("health_flags")))
-            check("Equipment captured",     len(p.get("available_equipment",[])) > 0, str(p.get("available_equipment")))
-            check("Fitness level",          p.get("fitness_level") == "beginner",  p.get("fitness_level"))
-            check("Time captured",          p.get("time_per_day_minutes") == 30,   str(p.get("time_per_day_minutes")))
-            check("SQL filters built",      bool(final_r.get("sql_filters")),      str(final_r.get("sql_filters")))
-            check("RAG filters built",      bool(final_r.get("rag_filters")),      str(final_r.get("rag_filters")))
-            m3_final = final_r
+    session_store.set_profile(tid, p)
+    m3_final = {
+        "profile": p.to_dict(),
+        "sql_filters": sql_f,
+        "rag_filters": rag_f,
+        "slots_complete": True,
+    }
 
 except Exception as e:
     check("Module 3 import/run", False, str(e))

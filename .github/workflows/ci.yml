@@ -34,6 +34,7 @@ jobs:
       - name: Import smoke (app package)
         run: |
           python -c "from app.conversation.profile_store import Profile; print('profile ok')"
+          python -c "from app.tools.actions import save_plan, calculate_calories; print('tools ok')"
           python -c "from app.conversation.agent import start_conversation; print('agent ok')"
 
   frontend-build:

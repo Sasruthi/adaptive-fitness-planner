@@ -42,7 +42,7 @@ from app.services.exercise_retrieval import get_exercises
 from app.services.exercise_rag import retrieve_exercise_semantic
 from app.services.exercise_selection import BODY_PART_QUERY_HINTS, resolve_split
 from app.services.rag_retrieval import retrieve_multi_query
-from app.mcp_server.server import calculate_calories
+from app.tools.actions import calculate_calories
 
 load_dotenv()
 

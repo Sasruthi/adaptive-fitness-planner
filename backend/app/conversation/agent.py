@@ -46,7 +46,7 @@ from app.services.rag_retrieval import (
 )
 from app.services.exercise_rag import retrieve_exercise_semantic
 from app.services.plan_agent import generate_plan_agentic
-from app.mcp_server.server import (
+from app.tools.actions import (
     save_plan, send_reminder, log_workout, get_workout_progress,
 )
 from app.llm import (

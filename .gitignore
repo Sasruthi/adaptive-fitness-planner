@@ -86,6 +86,7 @@ data/adaptive-fitness-planner-data/chunks/
 .DS_Store
 .idea/
 .vscode/
+.cursor/
 *.swp
 *~
 

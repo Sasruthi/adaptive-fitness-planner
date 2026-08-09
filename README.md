@@ -137,7 +137,7 @@ Optional: python -m app.scripts.load_nutrition_db  → nutrition_items (INDB)
 | **Routers** | Thin HTTP: conversation, plan, workout, exercises |
 | **Conversation agent** | ReAct tools: Q&A, profile, plan, save, reminders |
 | **Services** | RAG, NLU, exercise selection, plan generator, anthropometrics |
-| **MCP tools** | `save_plan`, calories, log workout, progress, email |
+| **Action tools** | `save_plan`, calories, log workout, progress, email |
 | **Stores** | Qdrant (vectors), SQLite (exercises, plans, nutrition, logs) |
 
 LLM: Groq primary, Azure OpenAI failover when configured.
@@ -152,7 +152,7 @@ adaptive-fitness-planner/
 │   ├── main.py                 # uvicorn entry
 │   ├── app/conversation/       # agent + profile store
 │   ├── app/services/           # plan, RAG, NLU, exercises, nutrition
-│   ├── app/mcp_server/         # save / email / progress tools
+│   ├── app/tools/              # save / email / progress action tools
 │   ├── app/routers/            # HTTP API
 │   ├── rag/                    # chunk / embed / CLIP scripts + qdrant_local
 │   └── scripts/                # exercise corpus → SQLite

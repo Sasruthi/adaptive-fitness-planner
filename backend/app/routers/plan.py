@@ -2,7 +2,7 @@
 FILE LOCATION: backend/app/routers/plan.py
 
 /api/plan/generate  — POST: generate full plan from profile + filters
-/api/plan/save      — POST: persist plan to DB via MCP tool
+/api/plan/save      — POST: persist plan to DB via action tools
 /api/plan/{email}   — GET:  retrieve user's active plan
 /api/plan/calories  — POST: calculate daily calorie target
 """
@@ -13,7 +13,7 @@ from app.schemas.models import (
     CalorieRequest,
 )
 from app.services.plan_agent import generate_plan_agentic
-from app.mcp_server.server import save_plan, calculate_calories, get_user_plan
+from app.tools.actions import save_plan, calculate_calories, get_user_plan
 from app.conversation.state import build_sql_filters, build_rag_filters
 
 router = APIRouter(prefix="/api/plan", tags=["Plan"])

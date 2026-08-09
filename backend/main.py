@@ -38,7 +38,7 @@ app = FastAPI(
     description="""
 India-first personalised fitness planning API.
 Combines conversational AI intake, RAG-grounded guideline retrieval,
-structured exercise retrieval, and MCP tool actions.
+structured exercise retrieval, and action tools (save / email / progress).
 
 ## Flow
 1. `POST /api/conversation/start` → get thread_id + greeting

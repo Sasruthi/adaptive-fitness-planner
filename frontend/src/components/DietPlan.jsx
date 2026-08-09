@@ -194,7 +194,7 @@ export default function DietPlan({ diet }) {
       {/* India tips */}
       {indiaTips.length>0 && (
         <div className="card bg-orange-50 border-orange-100">
-          <p className="font-semibold text-sm text-orange-700 mb-2">🇮🇳 India-Specific Tips</p>
+          <p className="font-semibold text-sm text-orange-700 mb-2">Tips</p>
           <ul className="space-y-1.5">
             {indiaTips.map((t,i)=>(
               <li key={i} className="text-sm text-gray-600 flex gap-1.5"><span className="text-orange-400 flex-shrink-0">✦</span>{t}</li>

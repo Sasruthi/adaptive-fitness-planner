@@ -1,10 +1,13 @@
 """
-FILE LOCATION: backend/app/mcp_server/server.py
+FILE LOCATION: backend/app/tools/actions.py
 
-Adaptive Fitness Planner — MCP Tool Server
-===========================================
-Exposes 6 tools the LangGraph agent can call to take real actions.
-Built with FastMCP (Python MCP SDK).
+Adaptive Fitness Planner — action tools
+=======================================
+Shared implementations for save / log / calories / progress / email.
+Imported directly by FastAPI routers and the LangGraph agent.
+
+Optionally wrapable as an MCP tool server via FastMCP if an external
+MCP client needs them (not required for the normal app runtime).
 
 Tools:
   1. save_plan          — persist generated plan to DB, return plan_id
@@ -14,12 +17,8 @@ Tools:
   5. get_workout_progress — weekly completion stats
   6. send_reminder      — email workout reminder via SMTP
 
-Run standalone:
-  python app/mcp_server/server.py
-
-Or import and mount into FastAPI:
-  from app.mcp_server.server import mcp
-  app.mount("/mcp", mcp.get_asgi_app())
+Run as optional MCP stdio server:
+  python -m app.tools.actions
 """
 
 import os, json, smtplib, mimetypes, html as html_lib
@@ -48,11 +47,11 @@ DB_PATH = Path(__file__).resolve().parents[2] / "data" / "fitness.db"
 engine  = create_engine(f"sqlite:///{DB_PATH}", connect_args={"check_same_thread": False})
 Session = sessionmaker(bind=engine)
 
-# ── MCP server instance ───────────────────────────────────────────────────────
+# ── Optional MCP wrapper (app uses the plain functions below directly) ────────
 mcp = FastMCP(
     name="adaptive-fitness-planner",
     instructions="""
-You are the Adaptive Fitness Planner tool server.
+You are the Adaptive Fitness Planner action tools.
 Use these tools to save plans, track workouts, calculate nutrition targets,
 and send reminders. Always confirm actions with the user before saving.
 """,
@@ -1092,9 +1091,9 @@ def _build_email_body(user_name, plan_day_label, exercises, reminder_type):
 </html>"""
 
 
-# ── Run standalone ────────────────────────────────────────────────────────────
+# ── Optional: expose tools over MCP stdio (not used by FastAPI runtime) ───────
 if __name__ == "__main__":
-    print("Starting Adaptive Fitness Planner MCP Server...")
+    print("Starting Adaptive Fitness Planner action tools (MCP stdio)...")
     print("Tools available:")
     for tool in ["save_plan", "log_workout", "calculate_calories",
                  "get_user_plan", "get_workout_progress", "send_reminder"]:

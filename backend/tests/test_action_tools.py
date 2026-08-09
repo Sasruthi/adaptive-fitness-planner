@@ -1,18 +1,18 @@
 """
-FILE LOCATION: backend/tests/test_mcp_tools.py
+FILE LOCATION: backend/tests/test_action_tools.py
 
-Tests MCP tools directly without starting the MCP server.
-Run from backend/: python tests/test_mcp_tools.py
+Tests action tools directly (plain Python imports — no MCP server process).
+Run from backend/: python tests/test_action_tools.py
 """
 import sys, json
 sys.path.insert(0, '.')
 
-from app.mcp_server.server import (
+from app.tools.actions import (
     save_plan, log_workout, calculate_calories,
     get_user_plan, get_workout_progress, send_reminder
 )
 
-print("Testing MCP tools directly (no server needed)...\n")
+print("Testing action tools directly (no MCP server needed)...\n")
 
 # Tool 1
 r = save_plan(
@@ -40,4 +40,4 @@ print(f"progress:     {'✅' if r['success'] else '❌'} {r.get('motivation','')
 r = send_reminder("test@example.com", "Test", "Monday", "Push-up, Squat")
 print(f"send_reminder:{'✅' if not r.get('error') else '❌'} {r.get('message','')[:60]}")
 
-print("\nAll tools verified. The server.py runs inside FastAPI in Module 6 — not standalone.")
+print("\nAll action tools verified.")

@@ -10,7 +10,7 @@ from app.schemas.models import (
     LogWorkoutRequest, LogWorkoutResponse,
     ProgressResponse, ReminderRequest,
 )
-from app.mcp_server.server import log_workout, get_workout_progress, send_reminder
+from app.tools.actions import log_workout, get_workout_progress, send_reminder
 
 router = APIRouter(prefix="/api/workout", tags=["Workout"])
 

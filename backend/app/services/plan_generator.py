@@ -60,7 +60,7 @@ from app.services.rag_retrieval import retrieve_multi_query
 from app.services.exercise_selection import resolve_split, resolve_exercise_sets
 from app.services.anthropometrics import resolve_height_weight
 from app.services.nutrition_lookup import get_verified_macros
-from app.mcp_server.server import calculate_calories
+from app.tools.actions import calculate_calories
 
 
 # ── Query builder for RAG ─────────────────────────────────────────────────────

@@ -57,8 +57,6 @@ stale_data/
 
 # Local learning / study materials (keep on disk, do not commit)
 docs/
-evals/trace_rag_query.py
-Adaptive_Fitness_Planner_Technical_Documentation.docx
 
 # Nested media dataset (too large for git — clone/symlink separately)
 data/hasaneyldrm-exercises-dataset/

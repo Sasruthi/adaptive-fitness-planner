@@ -12,7 +12,7 @@ langchain-core
 python-dotenv
 pymupdf
 numpy
-mcp>=1.6.0
+mcp>=1.6.0,<2
 httpx
 python-multipart
 pandas

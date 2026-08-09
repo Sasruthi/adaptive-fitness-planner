@@ -16,6 +16,10 @@ export default function PlanPage({ plan, planId, userEmail }) {
     plan?.stats?.diet_only ||
     plan?.profile_summary?.plan_mode === "diet_only"
   )
+  const yogaOnly = Boolean(
+    plan?.plan_mode === "yoga_only" ||
+    plan?.profile_summary?.plan_mode === "yoga_only"
+  )
   const [tab,           setTab]           = useState(dietOnly ? "diet" : "week")
   const [doneExercises, setDoneExercises] = useState(new Set())
   const [toast,         setToast]         = useState(null)
@@ -30,7 +34,9 @@ export default function PlanPage({ plan, planId, userEmail }) {
   const { week_plan=[], diet_plan, safety_notes=[], citations=[], weekly_tips=[], profile_summary={} } = plan
   const tabs = dietOnly
     ? TABS.filter(t => t.id !== "week")
-    : TABS
+    : TABS.map(t => (
+        t.id === "week" && yogaOnly ? { ...t, label: "🧘 Yoga" } : t
+      ))
 
   async function handleLogWorkout(exercise, day) {
     if (doneExercises.has(exercise.name)) return

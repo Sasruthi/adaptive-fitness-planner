@@ -26,7 +26,7 @@ of the architecture was already correct.
 
 import contextvars
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from dotenv import load_dotenv
 from langchain_core.tools import tool
@@ -36,7 +36,14 @@ from langgraph.prebuilt import create_react_agent
 
 from app.conversation.profile_store import session_store, Profile
 from app.conversation.state import build_sql_filters, build_rag_filters, injury_excluded_body_parts
-from app.services.rag_retrieval import retrieve_multi_query
+from app.services.rag_retrieval import (
+    retrieve_multi_query,
+    retrieve_guideline_images,
+    retrieve_guidelines_by_pages,
+    match_protocol_age_band,
+    rerank_guideline_chunks,
+    images_from_matching_chunks,
+)
 from app.services.exercise_rag import retrieve_exercise_semantic
 from app.services.plan_agent import generate_plan_agentic
 from app.mcp_server.server import (
@@ -71,17 +78,6 @@ def get_llm(provider: Optional[str] = None):
 # TOOLS — the agent decides which of these to call, and when
 # ══════════════════════════════════════════════════════════════════════════
 
-def _query_wants_bodyweight(q: str) -> bool:
-    from app.services.semantic_nlu import query_wants_bodyweight
-    return query_wants_bodyweight(q)
-
-
-def _query_is_diet_focused(q: str) -> bool:
-    """True when the user is asking about food/nutrition — not exercise demos."""
-    from app.services.semantic_nlu import query_is_diet_focused
-    return query_is_diet_focused(q)
-
-
 def _auto_ingest_profile_hints(user_message: str, thread_id: str) -> None:
     """
     Semantically capture profile facts from free text (embeddings + LLM extract)
@@ -101,31 +97,133 @@ def _normalize_exercise_for_ui(e: dict) -> dict:
     }
 
 
-@tool
-def answer_fitness_question(query: str) -> str:
+_VALID_QA_INTENTS = frozenset({"info", "exercise_qa", "plan"})
+_VALID_QA_MEDIA = frozenset({"none", "yoga_protocol", "gym_catalog", "auto"})
+_VALID_BODY_PARTS = frozenset({
+    "neck", "shoulders", "chest", "back", "upper arms", "lower arms",
+    "waist", "upper legs", "lower legs", "cardio",
+})
+
+
+def _resolve_qa_intent(intent: Optional[str], query: str) -> str:
+    """Prefer the agent's intent arg; fall back to prototype NLU only if omitted."""
+    raw = (intent or "").strip().lower().replace("-", "_")
+    if raw in _VALID_QA_INTENTS:
+        return raw
+    from app.services.semantic_nlu import classify_turn_intent
+    return classify_turn_intent(query)
+
+
+def _resolve_qa_media(media: Optional[str], query: str, intent: str) -> str:
     """
-    Answer a factual fitness/nutrition/exercise question (NOT a full weekly plan).
+    Resolve media mode. Agent-passed media wins (agentic path).
 
-    Routing (done in code — you do not choose):
-      info        → guideline passages only (water, macros, WHO/ICMR facts)
-      exercise_qa → guidelines + a few targeted exercise demos (e.g. lose arm fat)
-      plan        → do NOT use this tool; use update_profile / generate_plan instead
+    Fallback when media is missing/"auto": embedding NLU only — no pose-name
+    whitelist. Broad yoga+gym dumps → none; booklet demo → yoga_protocol;
+    exercise_qa → gym_catalog; info → none.
+    """
+    raw = (media or "auto").strip().lower().replace("-", "_")
+    if raw not in _VALID_QA_MEDIA:
+        raw = "auto"
+    if raw != "auto":
+        return raw
+    if _is_broad_mixed_workout_ask(query):
+        return "none"
+    if intent == "info":
+        return "none"
+    from app.services.semantic_nlu import query_wants_guideline_demo
+    if query_wants_guideline_demo(query):
+        return "yoga_protocol"
+    if intent == "exercise_qa":
+        return "gym_catalog"
+    return "none"
 
-    For diet/nutrition/hydration: never attach random workouts.
+
+def _is_broad_mixed_workout_ask(query: str) -> bool:
+    """
+    Underspecified mixed ask: yoga lane AND gym/workout lane with a mixing cue.
+
+    No pose-name list — structure of the ask is enough. "Yoga exercises for
+    beginners" is not broad; "yoga and gym workouts" is.
+    """
+    low = (query or "").lower()
+    if not low.strip():
+        return False
+    has_yoga = any(t in low for t in ("yoga", "asana", "pranayam"))
+    has_gym_lane = any(
+        t in low for t in ("gym", "workout", "workouts", "weight training", "strength training")
+    )
+    mixed = any(
+        w in low for w in (
+            " and ", " & ", " plus ", " as well as ", " both ",
+            "combine", "mixed", "along with",
+        )
+    )
+    return bool(has_yoga and has_gym_lane and mixed)
+
+
+@tool
+def answer_fitness_question(
+    query: str,
+    intent: Optional[str] = None,
+    media: Optional[str] = None,
+    focus_body_parts: Optional[List[str]] = None,
+) -> str:
+    """
+    Answer a factual fitness/nutrition/exercise/yoga question (NOT a full weekly plan).
+
+    YOU choose intent + media (agentic routing). Pass them every time:
+
+      intent:
+        info         — nutrition, hydration, WHO/ICMR facts, guideline tables
+        exercise_qa  — form tips / "exercises for X" that need demos
+        plan         — user wants a customised week plan (do NOT use this tool;
+                       call update_profile / generate_plan instead). If you still
+                       call with intent=plan, this tool redirects you.
+
+      media:
+        none           — text guidelines only (diet, water, age-band protocol lists)
+        yoga_protocol  — Common Yoga Protocol / Fit India DEMO PHOTOS for a
+                         SPECIFIC asana/pranayama (name it in query). Never for
+                         vague "show me yoga and workouts" — clarify first.
+        gym_catalog    — Free Exercise DB GIF cards (squat, arm fat, push-ups)
+        auto           — only if unsure; server falls back to a small NLU heuristic
+
+      focus_body_parts (optional): neck, shoulders, chest, back, upper arms,
+        lower arms, waist, upper legs, lower legs, cardio — for gym_catalog search.
     """
     thread_id = _current_thread.get()
     profile = session_store.get_profile(thread_id)
-    from app.services.semantic_nlu import classify_turn_intent, match_body_parts
+    from app.services.semantic_nlu import match_body_parts, query_wants_bodyweight
 
-    intent = classify_turn_intent(query)
-    # Plan intent should not be answered as a one-shot Q&A with exercise cards
+    intent = _resolve_qa_intent(intent, query)
+    media_mode = _resolve_qa_media(media, query, intent)
+
+    # Plan flow is profile → generate_plan; this tool must not invent a week.
     if intent == "plan":
         session_store.set_exercises(thread_id, [])
+        session_store.set_guideline_images(thread_id, [])
         return (
             "INTENT=plan. The user wants a customised plan, not a one-off tip. "
             "Do NOT list random exercises. Call get_profile_status, ask only for "
             "missing slots via update_profile, then generate_plan when ready. "
-            "If they only want diet, set plan_mode=diet_only."
+            "If they only want diet, set plan_mode=diet_only. "
+            "If they want a yoga plan, set plan_mode=yoga_only."
+        )
+
+    # Mixed yoga+gym dump with no named technique — clarify channels, skip RAG.
+    if _is_broad_mixed_workout_ask(query):
+        session_store.set_exercises(thread_id, [])
+        session_store.set_guideline_images(thread_id, [])
+        return (
+            "BROAD_REQUEST. The user mixed yoga and gym/workouts without naming "
+            "a specific asana, pranayama, or move.\n"
+            "Do NOT invent topics or call media=yoga_protocol until they name one.\n"
+            "Offer briefly:\n"
+            "  (A) Named yoga technique → intent=exercise_qa media=yoga_protocol\n"
+            "  (B) Gym/bodyweight for a body region → intent=exercise_qa "
+            "media=gym_catalog + focus_body_parts\n"
+            "  (C) Full week plan → update_profile / generate_plan\n"
         )
 
     known_flags = [f for f in profile.health_flags if f != "none"] + profile.custom_health_notes
@@ -142,19 +240,82 @@ def answer_fitness_question(query: str) -> str:
     demo_ctx = f" ({', '.join(demo_bits)})" if demo_bits else ""
     flag_ctx = f" (context: user has {', '.join(known_flags)})" if known_flags else ""
     augmented_query = f"{query}{demo_ctx}{flag_ctx}"
+    rag_queries = [augmented_query]
+    age_band = match_protocol_age_band(query)
+    if age_band:
+        # Explicit Fit India section title — lifts the correct protocol table
+        # above nearby TOC / video-link pages.
+        rag_queries.append(
+            f"Yoga Protocol for {age_band} Years of Age Fit India practices rounds duration"
+        )
+    # Yoga technique expansions (OCR/phrasing bridges, e.g. Naukasana / boat pose).
+    if media_mode == "yoga_protocol":
+        from app.services.rag_retrieval import _clip_query_variants
+        for variant in _clip_query_variants(query)[1:]:
+            if variant not in rag_queries:
+                rag_queries.append(variant)
 
     guideline_chunks = retrieve_multi_query(
-        [augmented_query], {"trust_tier__in": ["Tier 1", "Tier 2"]}, top_k_per_query=4
+        rag_queries, {"trust_tier__in": ["Tier 1", "Tier 2"]}, top_k_per_query=4
     )
+    guideline_chunks = rerank_guideline_chunks(query, guideline_chunks)
 
-    want_exercises = intent == "exercise_qa"
+    # ── Media: prefer SAME-PAGE images as grounded text, then CLIP hybrid ───
+    guideline_images: List[dict] = []
+    if media_mode == "yoga_protocol":
+        try:
+            # 1) Text-aligned: Naukasana lives on Fit India SRC003 p.18 — not CYP.
+            guideline_images = images_from_matching_chunks(
+                query, guideline_chunks, top_k=2,
+            )
+            if not guideline_images:
+                # 2) CLIP + text-page anchors across CYP + Fit India demos.
+                guideline_images = retrieve_guideline_images(
+                    query, top_k=2, source_ids=["SRC009", "SRC003"],
+                )
+        except Exception as e:
+            print(f"[RAG] guideline image retrieval failed: {e}")
+            guideline_images = []
+    session_store.set_guideline_images(thread_id, guideline_images)
+
+    # When CLIP matched yoga/protocol photos, pull Technique text from those pages.
+    if guideline_images:
+        by_source: Dict[str, List[int]] = {}
+        for img in guideline_images:
+            sid = img.get("source_id")
+            pg = img.get("page_number")
+            if sid and pg is not None:
+                by_source.setdefault(sid, []).append(int(pg))
+        page_chunks = []
+        for sid, pages in by_source.items():
+            page_chunks.extend(retrieve_guidelines_by_pages(sid, pages, limit=6))
+        if page_chunks:
+            seen = {(c.get("source_id"), c.get("page_number"), (c.get("text") or "")[:80])
+                    for c in guideline_chunks}
+            for c in page_chunks:
+                key = (c.get("source_id"), c.get("page_number"), (c.get("text") or "")[:80])
+                if key not in seen:
+                    guideline_chunks.append(c)
+                    seen.add(key)
+
+    # Gym GIFs only when the agent asked for gym_catalog (never mix with yoga photos).
+    want_exercises = media_mode == "gym_catalog" and not guideline_images
 
     equipment = list(profile.available_equipment) if profile.available_equipment else None
-    if _query_wants_bodyweight(query):
+    if query_wants_bodyweight(query):
         equipment = ["body only", "none"]
 
-    # Prefer body parts named IN THIS question (e.g. arm fat → upper arms)
-    mentioned = match_body_parts(query, threshold=0.40, top_n=2)
+    # Agent-supplied body focus first; NLU match as fallback for gym search.
+    mentioned: List[str] = []
+    if focus_body_parts:
+        for bp in focus_body_parts:
+            key = (bp or "").strip().lower()
+            if key == "core" or key == "abs":
+                key = "waist"
+            if key in _VALID_BODY_PARTS and key not in mentioned:
+                mentioned.append(key)
+    if not mentioned:
+        mentioned = match_body_parts(query, threshold=0.40, top_n=2)
     body_parts = mentioned or None
 
     # Age soft-gates difficulty for exercise demos
@@ -166,7 +327,6 @@ def answer_fitness_question(query: str) -> str:
 
     exercise_hits: List[dict] = []
     if want_exercises:
-        # Build a focused exercise query from the user ask + body region
         region = ", ".join(mentioned) if mentioned else ""
         ex_query = (
             f"{query}. Focus on practical exercises"
@@ -176,8 +336,6 @@ def answer_fitness_question(query: str) -> str:
         # Hard injury filters — same map as plan SQL (never show contraindicated cards)
         injury_excl = injury_excluded_body_parts(profile.health_flags or [])
         flags_for_ban = [f for f in (profile.health_flags or []) if f != "none"]
-        # If the asked region is entirely injury-excluded, drop region filter
-        # so we can still suggest safe alternatives elsewhere.
         safe_body_parts = body_parts
         if body_parts and injury_excl:
             excl_l = {e.lower() for e in injury_excl}
@@ -193,14 +351,17 @@ def answer_fitness_question(query: str) -> str:
                 health_flags=flags_for_ban or None,
                 prefer_media=True,
                 prefer_difficulty=prefer_diff,
-                # Widen equipment/region only — injury excludes stay on
                 relax_filters_on_empty=bool(safe_body_parts),
             )
         ]
     session_store.set_exercises(thread_id, exercise_hits)
 
     parts = []
-    parts.append(f"TURN_INTENT={intent}  (info=guidelines only; exercise_qa=guidelines+demos)")
+    parts.append(
+        f"TURN_INTENT={intent}  MEDIA={media_mode}  "
+        f"(info+none=guidelines; exercise_qa+gym_catalog=GIF demos; "
+        f"yoga_protocol=booklet photos)"
+    )
     if known_flags:
         parts.append(
             f"KNOWN USER HEALTH CONTEXT: {known_flags}. You MUST actively screen "
@@ -232,25 +393,58 @@ def answer_fitness_question(query: str) -> str:
     if guideline_chunks:
         parts.append("GUIDELINE PASSAGES:")
         for c in guideline_chunks[:5]:
-            parts.append(f"- ({c['source_name']}, p.{c.get('page_number')}): {c['text'][:350]}")
+            body = (c.get("text") or "")[:1600]
+            parts.append(f"- ({c['source_name']}, p.{c.get('page_number')}): {body}")
+        parts.append(
+            "If a passage is a yoga/fitness PROTOCOL TABLE (practices, rounds, "
+            "durations), reproduce the full sequence from that passage — do not "
+            "summarize it away as 'other practices'."
+        )
     else:
         parts.append(
             "GUIDELINE PASSAGES: none retrieved for this query. Say you lack a "
             "grounded source; do not invent citations or page numbers."
         )
 
-    if intent == "info":
+    if guideline_images:
         parts.append(
-            "\nUSER ASKED A FACTUAL / NUTRITION / GUIDELINE QUESTION. Answer from "
-            "passages only. Cite sources. Do NOT invent a workout, do NOT list "
-            "exercise names, do NOT attach GIFs as a substitute for the answer."
+            "\nMATCHED DEMONSTRATION PHOTO(S) (the app will render these below your "
+            "reply — do not describe them as missing, do not ask the user to imagine "
+            "the pose, and do NOT suggest unrelated catalog exercises this turn):"
         )
-    elif intent == "exercise_qa":
+        for img in guideline_images:
+            parts.append(
+                f"- {img['source_name']} p.{img['page_number']} "
+                f"(match score {img['score']}): {img['caption'][:150]}"
+            )
         parts.append(
-            "\nUSER ASKED A SPECIFIC FITNESS TOPIC (e.g. lose arm fat, form tips). "
-            "Give a short grounded answer from passages, then recommend ONLY the "
-            "listed exercises below with one form cue each. This is NOT a weekly plan — "
-            "do not invent a 7-day schedule. Offer to build a full plan if they want one."
+            "When answering, give the step-by-step technique from the GUIDELINE "
+            "PASSAGES above (Sthiti / Technique / Benefits). Cite the source and "
+            "page. The photos below are from that protocol — tie your steps to them."
+        )
+
+    if guideline_images:
+        parts.append(
+            "\nYOGA/PROTOCOL DEMO TURN: teach the technique from passages + photos. "
+            "If passages do not cover the named pose, say so and do not invent steps "
+            "from another asana. Do not switch to gym catalog this turn."
+        )
+    elif intent == "info" or media_mode == "none":
+        parts.append(
+            "\nFACTUAL / NUTRITION / GUIDELINE QUESTION. Answer from passages only. "
+            "Cite sources. Do NOT invent a workout or attach gym GIFs."
+        )
+    elif intent == "exercise_qa" or media_mode == "gym_catalog":
+        parts.append(
+            "\nTOPIC Q&A (form / body-region tips). Short grounded answer, then "
+            "recommend ONLY listed exercises with one form cue each. Not a weekly plan."
+        )
+
+    if media_mode == "yoga_protocol" and not guideline_images:
+        parts.append(
+            "\nNo protocol demo photo matched confidently. Answer from text passages "
+            "only; say if the named pose is not in the retrieved Common Yoga Protocol "
+            "material. Do not invent photos or substitute gym GIFs."
         )
 
     if exercise_hits:
@@ -270,7 +464,7 @@ def answer_fitness_question(query: str) -> str:
             "Recommend these by name with one short form cue. Do NOT invent exercises "
             "that aren't listed. The app displays their GIFs and how-to text."
         )
-    elif intent == "exercise_qa":
+    elif media_mode == "gym_catalog":
         parts.append(
             "\nNo catalog exercises matched filters — answer with guideline advice only "
             "and say you can widen search or build a plan if they share equipment."
@@ -306,10 +500,13 @@ def update_profile(
     the tool's return message for exactly what was rejected and why):
       goal: lose_fat, build_muscle, improve_strength, improve_flexibility,
             improve_endurance, general_fitness, rehabilitation, stress_relief
-      plan_mode: "full" (workout+diet) OR "diet_only" (meals/nutrition only).
-            If the user says they only want a diet plan / no exercise, set
+      plan_mode: "full" (workout+diet), "diet_only" (meals only), or
+            "yoga_only" (yoga/asana week + light diet guidance).
+            If the user only wants a diet plan / no exercise, set
             plan_mode="diet_only" immediately — then body parts, equipment,
             fitness_level, and time_per_day are NOT required.
+            If they ask for a yoga plan, set plan_mode="yoga_only"
+            (equipment defaults to body only / mat).
             height_cm and weight_kg are preferred for accurate BMR. If the user
             does not know them, leave unset — the plan will use India age/sex
             average midpoints and mark calories as estimated.
@@ -349,6 +546,11 @@ def update_profile(
     )
     if mode == "diet_only":
         msg += " Diet-only mode: do NOT ask for body parts / equipment / fitness level / workout time."
+    elif mode == "yoga_only":
+        msg += (
+            " Yoga-only mode: keep equipment as body only/mat; prefer flexibility/"
+            "stress-relief goals; ask age, gender, health, fitness level, time, body focus."
+        )
     if result["rejected"]:
         msg += (
             f" REJECTED (these did not match the valid schema — tell the user "
@@ -376,6 +578,7 @@ def generate_plan() -> str:
     Generate a personalised plan from the profile collected so far.
     - plan_mode=full → 7-day workout + diet
     - plan_mode=diet_only → diet/nutrition plan only (no workouts)
+    - plan_mode=yoga_only → 7-day yoga/asana practice + light diet guidance
     Only call once get_profile_status shows nothing missing AND the user
     wants a plan. Health flags/notes must be confirmed first.
     """
@@ -385,7 +588,8 @@ def generate_plan() -> str:
         return (
             f"BLOCKED: profile is not complete/safe yet. Missing: {profile.missing_fields()}. "
             f"Ask the user for these before calling generate_plan again. "
-            f"If they only want diet, set plan_mode=diet_only first (skips exercise slots)."
+            f"If they only want diet, set plan_mode=diet_only first (skips exercise slots). "
+            f"If they want yoga, set plan_mode=yoga_only."
         )
     p = profile.to_dict()
     sql_filters = build_sql_filters(p) if profile.plan_mode != "diet_only" else {}
@@ -501,39 +705,41 @@ TOOLS = [
 
 SYSTEM_PROMPT = """You are the Adaptive Fitness Planner, a friendly India-focused fitness assistant.
 
-Every user message is ONE of three intents — treat them differently:
+You choose tools AND (for Q&A) intent + media. Always pass intent and media
+explicitly on answer_fitness_question — that is the agentic loop. Never use
+media="auto" if you can decide. Never mix yoga_protocol with gym_catalog.
 
-1) INFO (fact / nutrition / hydration / guideline question)
-   → Call answer_fitness_question. Answer from document passages only.
-   → Do NOT show workouts, do NOT start plan intake, do NOT invent a schedule.
+Routing — pick ONE lane per user message:
 
-2) EXERCISE_QA (topic tip, e.g. "how to lose arm fat", "exercises for back pain")
-   → Call answer_fitness_question. It returns guidelines + a few targeted demos.
-   → Summarize the tip and name those demos. This is NOT a weekly plan.
-   → Offer a full plan only if they ask.
+1) INFO — nutrition, hydration, WHO/ICMR facts, age-band protocol TABLES only
+   → intent="info", media="none" (text guidelines; no photos/GIFs).
 
-3) PLAN (wants a customised week plan / diet plan / workout plan)
-   → Do NOT dump exercise GIFs as the answer.
+2) EXERCISE_QA — any technique / demo / "exercises for X"
+   Call answer_fitness_question FIRST (do not open plan intake for tips).
+   → Yoga / asana / pranayama / breathing technique (even a single word like
+     "pranayama" or "tadasana", or "what is Naukasana"):
+        intent="exercise_qa", media="yoga_protocol"
+        Teach only from returned passages/photos; if missing, say so.
+   → Gym / bodyweight ("squat", "arm fat", push-ups):
+        intent="exercise_qa", media="gym_catalog", focus_body_parts when obvious.
+   → Vague "yoga for beginners" with no technique → intent="info", media="none"
+     OR ask which technique they want.
+   → Mixed "yoga AND gym workouts" with no focus → clarify A/B/C or follow
+     BROAD_REQUEST. Never invent body goals they did not mention.
+
+3) PLAN — customised week / diet-only / yoga-only
+   → Do NOT call answer_fitness_question for the plan itself.
    → update_profile + get_profile_status; ask 1–2 missing slots at a time.
-   → generate_plan only when slots are complete and health flags confirmed.
-   → plan_mode=diet_only if they only want meals (skips exercise slots).
+   → generate_plan when slots complete; plan_mode=diet_only|yoga_only|full.
 
-INFER, DON'T JUST WAIT TO BE ASKED: "exercises for women" → gender=female;
-"my knee injury" → health_flags; "54 year old male diabetic" → age+gender+flags.
-Never re-ask facts already stored.
-
-AGE & GENDER & SIZE: age + sex are required before generate_plan.
-Ask for height_cm + weight_kg when possible (better BMR). If the user does
-not know / skips size, proceed anyway — calories use India age/sex midpoints
-and must be disclosed as approximate. Never invent a different formula.
-
-IF update_profile REJECTS A VALUE: map it yourself (core→waist, full body,
-no equipment→body only). Never make the user type exact system tokens.
-
-NEVER FABRICATE A PLAN. If generate_plan hasn't succeeded, you have no plan —
-don't invent a 7-day schedule in chat.
-
-After generate_plan succeeds, summarize warmly, then ask before save/email.
+You may update_profile in parallel when Q&A reveals demographics, but still
+answer via answer_fitness_question in the same turn.
+When user says "yes" to demos, call the tool with yoga_protocol or gym_catalog.
+INFER profile facts; never re-ask stored facts.
+AGE & GENDER required before generate_plan; height/weight preferred for BMR.
+IF update_profile rejects a value: remap (core→waist, full body, no equipment→body only).
+NEVER fabricate a plan without successful generate_plan.
+After generate_plan succeeds, summarize, then ask before save/email.
 """
 
 _checkpointer = MemorySaver()
@@ -564,6 +770,7 @@ def start_conversation(thread_id: str) -> dict:
 def process_user_message(user_message: str, thread_id: str) -> dict:
     _current_thread.set(thread_id)
     session_store.clear_exercises(thread_id)
+    session_store.clear_guideline_images(thread_id)
     # Capture age/gender/diabetes from free text before the LLM turn so we
     # never re-ask for facts the user already stated.
     _auto_ingest_profile_hints(user_message, thread_id)
@@ -595,6 +802,7 @@ def process_user_message(user_message: str, thread_id: str) -> dict:
     # answer_fitness_question / generate_plan). Never re-attach week_plan
     # day-0 GIFs onto unrelated Q&A (e.g. water → abs cards).
     exercises = [_normalize_exercise_for_ui(e) for e in session_store.get_exercises(thread_id)]
+    guideline_images = session_store.get_guideline_images(thread_id)
 
     return {
         "thread_id": thread_id,
@@ -607,4 +815,5 @@ def process_user_message(user_message: str, thread_id: str) -> dict:
         "sql_filters": sql_filters,
         "rag_filters": rag_filters,
         "exercises": exercises,
+        "guideline_images": guideline_images,
     }

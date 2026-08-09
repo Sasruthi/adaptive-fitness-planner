@@ -1,8 +1,18 @@
 """
-Semantic NLU for conversation intent + profile hints.
-=======================================================
-User meaning is classified by embedding similarity to prototype utterances.
-Structured demographics / health (with negation) use LLM extract when available.
+Semantic NLU — embedding prototypes for soft classification.
+
+Roles:
+  1. Fallback Q&A routing when answer_fitness_question is called without
+     intent / with media="auto" (agent normally passes those explicitly).
+  2. Soft profile slot hints (goal, body parts, health flags, plan_mode)
+     used by auto_ingest_profile_semantic.
+
+Inputs: free-text user utterances.
+Outputs: intent labels (info | exercise_qa | plan), media preference
+(yoga demo vs gym), body-part lists, optional plan_mode.
+
+Structured demographics / health with negation use LLM extract when
+SEMANTIC_LLM_EXTRACT=1 (see extract helpers below).
 """
 
 from __future__ import annotations
@@ -47,7 +57,7 @@ DIET_PROTOTYPES = [
     "How much fluid or water to drink regularly?",
 ]
 
-# Pure factual Q&A — guidelines only, no exercise cards, no plan flow
+# Pure factual Q&A — guideline text only (no exercise cards / yoga photos)
 INFO_PROTOTYPES = DIET_PROTOTYPES + [
     "What are the WHO physical activity guidelines for adults?",
     "Is running safe with high blood pressure according to guidelines?",
@@ -55,15 +65,21 @@ INFO_PROTOTYPES = DIET_PROTOTYPES + [
     "What does ICMR say about protein for vegetarians?",
 ]
 
-# Topic Q&A that needs a short answer + a few targeted exercise demos
+# Topic Q&A that needs a short answer + targeted demos (gym GIFs or yoga photos)
 EXERCISE_QA_PROTOTYPES = [
     "How do I lose arm fat? Show exercises for arms and toning.",
     "What are good exercises for lower back pain?",
     "Show me beginner bodyweight moves for biceps with form tips.",
     "How do I do a push-up correctly?",
+    "How do I do a squat correctly? Show squat form.",
+    "Arm fat reducing exercises with demos.",
     "Exercises to reduce belly fat and strengthen core.",
     "Recommend stretches for tight shoulders and neck.",
     "Best movements to tone thighs without equipment.",
+    "Give me squatting workouts and lower body moves.",
+    "How do I practice alternate nostril breathing pranayama?",
+    "What are the steps for Kapalabhati in Common Yoga Protocol?",
+    "How to do tadasana mountain pose technique?",
 ]
 
 EXERCISE_PROTOTYPES = EXERCISE_QA_PROTOTYPES  # alias used by older callers
@@ -85,6 +101,39 @@ DIET_ONLY_PLAN_PROTOTYPES = [
 ]
 
 FULL_PLAN_PROTOTYPES = PLAN_PROTOTYPES
+
+YOGA_ONLY_PLAN_PROTOTYPES = [
+    "I want a yoga plan for the week",
+    "Create a yoga-only routine with asanas and pranayama",
+    "Give me a weekly yoga practice plan, not gym workouts",
+    "Build a Common Yoga Protocol style yoga schedule",
+    "I only want yoga asanas stretching breathing practice plan",
+]
+
+# When True, retrieve CLIP photos from yoga / Fit India protocol PDFs.
+# Gym form questions (squat, arm fat, push-up) must stay False so Free
+# Exercise DB GIFs are shown instead of random booklet cartoons.
+GUIDELINE_DEMO_PROTOTYPES = [
+    "How do I do this yoga asana from the Common Yoga Protocol?",
+    "Show step-by-step pranayama alternate nostril breathing technique",
+    "Yoga protocol demonstration photo for this pose",
+    "How to perform Surya Namaskar from the yoga booklet",
+    "Anulom Vilom Bhramari Kapalabhati technique from yoga protocol",
+    "What is pranayama and how is it practiced?",
+    "Explain this yoga posture with demonstration steps",
+    "Boat pose naukasana muscular strength how to perform",
+    "Mountain pose standing asana technique from yoga booklet",
+    "Tree pose balancing yoga asana demonstration",
+    "Alternate nostril breathing nadi shodhana technique",
+]
+
+GYM_EXERCISE_MEDIA_PROTOTYPES = [
+    "How do I do a squat correctly gym form",
+    "Arm fat reducing exercises with workout GIFs",
+    "Show me push-up and tricep dip exercise demos",
+    "Best gym or bodyweight moves to tone arms",
+    "Squatting workouts and strength training form tips",
+]
 
 
 BODYWEIGHT_PROTOTYPES = [
@@ -177,6 +226,9 @@ def _proto_bank() -> Dict[str, np.ndarray]:
         "plan": PLAN_PROTOTYPES,
         "diet_only_plan": DIET_ONLY_PLAN_PROTOTYPES,
         "full_plan": FULL_PLAN_PROTOTYPES,
+        "yoga_only_plan": YOGA_ONLY_PLAN_PROTOTYPES,
+        "guideline_demo": GUIDELINE_DEMO_PROTOTYPES,
+        "gym_exercise_media": GYM_EXERCISE_MEDIA_PROTOTYPES,
         "bodyweight": BODYWEIGHT_PROTOTYPES,
         "full_body": FULL_BODY_PROTOTYPES,
     }
@@ -225,8 +277,14 @@ def classify_turn_intent(query: str) -> str:
             best_prototype_score(v, bank["plan"]),
             best_prototype_score(v, bank["diet_only_plan"]),
             best_prototype_score(v, bank["full_plan"]),
+            # yoga_only_plan is ONLY for plan_mode — including it here makes
+            # "how to do pranayama" look like "I want a yoga plan".
         ),
     }
+    # Technique/how-to with booklet demos → exercise_qa (not plan intake)
+    if query_wants_guideline_demo(query):
+        return "exercise_qa"
+
     # Plan wins only when clearly ahead (avoid treating "arm fat tips" as plan)
     winner = max(scores, key=scores.get)
     if winner == "plan" and scores["plan"] < 0.48:
@@ -252,11 +310,60 @@ def classify_plan_mode(query: str) -> Optional[str]:
     bank = _proto_bank()
     diet_only = best_prototype_score(v, bank["diet_only_plan"])
     full = best_prototype_score(v, bank["full_plan"])
-    if full >= 0.48 and full >= diet_only + 0.02:
+    yoga_only = best_prototype_score(v, bank["yoga_only_plan"])
+    # Keyword shortcuts (embedding alone can miss short "yoga plan")
+    low = query.lower()
+    if any(k in low for k in ("yoga plan", "yoga-only", "yoga only", "only yoga", "yogic plan")):
+        return "yoga_only"
+    if yoga_only >= 0.46 and yoga_only >= full - 0.02 and yoga_only >= diet_only:
+        return "yoga_only"
+    if full >= 0.48 and full >= diet_only + 0.02 and full >= yoga_only:
         return "full"
-    if diet_only >= 0.48 and diet_only > full:
+    if diet_only >= 0.48 and diet_only > full and diet_only > yoga_only:
         return "diet_only"
     return None
+
+
+def query_wants_guideline_demo(query: str, threshold: float = 0.42) -> bool:
+    """
+    Fallback only: should booklet demos (CYP / Fit India) be retrieved?
+
+    Primary decision is the agent's media= arg. This uses embedding prototypes
+    (guideline_demo vs gym_exercise_media) — not a hardcoded pose-name list.
+    Age-band protocol LIST asks stay False (text tables, not pose photos).
+    """
+    if not (query or "").strip():
+        return False
+    low = query.lower()
+    listing = any(w in low for w in (
+        "for 50", "for 35", "for 18", "year old", "years of age",
+        "age group", "protocol for",
+    ))
+    how_to = any(w in low for w in (
+        "how", "technique", "steps", "show", "do i", "perform", "practice",
+        "demonstrate", "what is", "explain",
+    ))
+    if listing and not how_to:
+        return False
+
+    v = _qvec(query)
+    bank = _proto_bank()
+    demo = best_prototype_score(v, bank["guideline_demo"])
+    gym = best_prototype_score(v, bank["gym_exercise_media"])
+
+    # Clear booklet-demo signal
+    if demo >= threshold and demo >= gym - 0.02:
+        return True
+    # Yoga-domain phrasing with a competitive demo score
+    yogaish = any(t in low for t in ("yoga", "asana", "āsana", "pranayam", "prāṇāyām"))
+    if yogaish and demo >= 0.36 and demo >= gym - 0.05:
+        return True
+    # Short technique names often score mid-demo / near-zero gym (Sanskrit).
+    # Prefer booklet when gym signal is weak and demo clearly leads — still
+    # embedding-relative, not a pose-name list.
+    if gym < 0.28 and demo >= 0.18 and (demo - gym) >= 0.12:
+        return True
+    return False
 
 
 def match_body_parts(query: str, threshold: float = 0.40, top_n: int = 3) -> List[str]:
@@ -359,7 +466,7 @@ Schema:
   "custom_health_notes": string list,
   "available_equipment": list from {equip},
   "target_body_parts": list from {parts} or ["full body"],
-  "plan_mode": "full"|"diet_only"|null,
+  "plan_mode": "full"|"diet_only"|"yoga_only"|null,
   "time_per_day_minutes": int|null
 }}
 
@@ -407,6 +514,16 @@ def auto_ingest_profile_semantic(user_message: str, profile) -> Dict[str, Any]:
         updates["time_per_day_minutes"] = 0
         if not profile.goal:
             updates["goal"] = match_goal(text) or "general_fitness"
+    elif mode == "yoga_only":
+        updates["plan_mode"] = "yoga_only"
+        if not profile.available_equipment:
+            updates["available_equipment"] = ["body only"]
+        if not profile.goal:
+            updates["goal"] = match_goal(text) or "improve_flexibility"
+        if not profile.fitness_level:
+            lvl = match_fitness_level(text)
+            if lvl:
+                updates["fitness_level"] = lvl
     elif mode == "full":
         updates["plan_mode"] = "full"
         lvl = match_fitness_level(text)
@@ -465,7 +582,7 @@ def auto_ingest_profile_semantic(user_message: str, profile) -> Dict[str, Any]:
                 updates["health_flags"] = [f for f in hf if f != "none"]
         if not profile.custom_health_notes and extracted.get("custom_health_notes"):
             updates["custom_health_notes"] = extracted["custom_health_notes"]
-        if extracted.get("plan_mode") in ("full", "diet_only") and "plan_mode" not in updates:
+        if extracted.get("plan_mode") in ("full", "diet_only", "yoga_only") and "plan_mode" not in updates:
             updates["plan_mode"] = extracted["plan_mode"]
 
     if "gender" not in updates and not profile.gender:

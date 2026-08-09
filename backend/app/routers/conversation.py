@@ -63,6 +63,7 @@ async def message(req: UserMessageRequest):
             sql_filters=result.get("sql_filters") or None,
             rag_filters=result.get("rag_filters") or None,
             exercises=result.get("exercises") or None,
+            guideline_images=result.get("guideline_images") or None,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Conversation error: {str(e)}")

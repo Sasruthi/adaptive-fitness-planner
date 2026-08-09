@@ -1,14 +1,34 @@
-# Secrets & local env
+# Secrets & local env (never commit real keys)
 .env
 .env.*
 !.env.example
 backend/.env
+backend/.env.*
+!backend/.env.example
 frontend/.env
+frontend/.env.*
+!frontend/.env.example
 
-# Python
+# Local Python virtualenv
 env/
 .venv/
 venv/
+
+# Curated local snapshot / archives (not the runtime app)
+main_scripts/
+main_scripts.zip
+*.zip
+
+# Root duplicates / scratch (canonical code lives under backend/)
+/plan_generator.py
+/rag/
+frontend_*_snippet.jsx
+BUGFIX_CHANGELOG.md
+README_REFACTOR.md
+EXERCISE_DATA_MERGE_REPORT.md
+SETUP_AND_TEST_GUIDE.md
+
+# Python
 **/__pycache__/
 *.py[cod]
 *.egg-info/
@@ -34,6 +54,10 @@ backend/data/qdrant/
 
 # Nested media dataset (separate; too large)
 data/hasaneyldrm-exercises-dataset/
+
+# Extracted guideline PDF demos (rebuild via backend/rag/extract_pdf_images.py)
+backend/static/guideline_images/
+**/guideline_images/
 
 # Accidental duplicate folders
 **/structured (Copy)/
@@ -62,7 +86,3 @@ INDB.xlsx
 .tmp/
 .temp/
 **/agent-transcripts/
-
-# Archives
-main_scripts.zip
-*.zip

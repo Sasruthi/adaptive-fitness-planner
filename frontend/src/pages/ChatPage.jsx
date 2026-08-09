@@ -23,6 +23,33 @@ function ExerciseMediaStrip({ exercises }) {
   )
 }
 
+function GuidelineImagesStrip({ images }) {
+  if (!images?.length) return null
+  return (
+    <div className="mt-3 flex flex-wrap gap-2">
+      {images.map((img, i) => {
+        const src = mediaSrc(img.image_url)
+        if (!src) return null
+        return (
+          <figure key={`${img.image_url}-${i}`} className="max-w-[220px] rounded-xl overflow-hidden border border-gray-100 bg-white">
+            <img
+              src={src}
+              alt={img.caption || img.source_name || "Guideline demo"}
+              className="w-full h-36 object-contain bg-gray-50"
+              onError={(e) => { e.currentTarget.closest("figure").style.display = "none" }}
+            />
+            <figcaption className="px-2 py-1.5 text-[10px] text-gray-500 leading-snug">
+              {[img.source_name, img.page_number != null ? `p.${img.page_number}` : null]
+                .filter(Boolean)
+                .join(" — ")}
+            </figcaption>
+          </figure>
+        )
+      })}
+    </div>
+  )
+}
+
 function ChatExerciseCard({ exercise }) {
   const [open, setOpen] = useState(false)
   const [failedGif, setFailedGif] = useState(false)
@@ -118,8 +145,13 @@ export default function ChatPage({
     }
   }
 
-  function addBot(text, exercises = null) {
-    setMessages(prev => [...prev, { role: "assistant", text, exercises: exercises || undefined }])
+  function addBot(text, exercises = null, guidelineImages = null) {
+    setMessages(prev => [...prev, {
+      role: "assistant",
+      text,
+      exercises: exercises || undefined,
+      guideline_images: guidelineImages || undefined,
+    }])
   }
   function addUser(text) { setMessages(prev => [...prev, { role: "user", text }]) }
 
@@ -132,7 +164,7 @@ export default function ChatPage({
     try {
       const { data } = await sendMessage(threadId, msg)
       setChatStage(data.stage)
-      addBot(data.message, data.exercises)
+      addBot(data.message, data.exercises, data.guideline_images)
       // Agentic: keep chatting after profile is complete — don't force the email form.
       // Offer save only when a plan actually arrives.
       if (data.plan) {
@@ -217,6 +249,9 @@ export default function ChatPage({
             <div className={`${m.role === "user" ? "chat-bubble-user" : "chat-bubble-bot"} max-w-[85%]`}>
               <p className="text-sm leading-relaxed"
                  dangerouslySetInnerHTML={{ __html: renderText(m.text) }} />
+              {m.role === "assistant" && m.guideline_images?.length > 0 && (
+                <GuidelineImagesStrip images={m.guideline_images} />
+              )}
               {m.role === "assistant" && m.exercises?.length > 0 && (
                 <ExerciseMediaStrip exercises={m.exercises} />
               )}

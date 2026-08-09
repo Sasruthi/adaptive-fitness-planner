@@ -33,6 +33,8 @@ class ConversationResponse(BaseModel):
     rag_filters:    Optional[Dict[str, Any]] = None
     # Semantically matched exercises (with gif_url/image_url) for chat media cards
     exercises:      Optional[List[Dict[str, Any]]] = None
+    # CLIP-matched guideline demonstration photos (yoga protocol, etc.)
+    guideline_images: Optional[List[Dict[str, Any]]] = None
 
 
 # ── Plan ─────────────────────────────────────────────────────────────────────

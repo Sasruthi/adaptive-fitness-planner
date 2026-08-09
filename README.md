@@ -1,56 +1,146 @@
 # Adaptive Fitness Planner
 
-India-based personalised fitness assistant: chat to collect a profile, answer questions with guideline RAG, retrieve real exercises (with media), and generate a weekly workout + diet plan grounded in filters, Mifflin–St Jeor calories, and Indian nutrient data.
+India-first personalised fitness assistant. Users chat in natural language; the system collects a safe profile, answers guideline-grounded questions (with demo media when useful), and builds a weekly workout + diet plan.
 
 ---
 
-## What this project does
-
-| Capability | Description |
-|------------|-------------|
-| **Conversational intake** | LangGraph ReAct agent collects goal, body parts, equipment, health flags, etc. |
-| **Q&A with RAG** | Answers nutrition / guideline questions from India-based PDF sources (ICMR-NIN, WHO, FSSAI, Fit India, …) |
-| **Exercise demos** | Semantic + SQL retrieval over a merged exercise catalog (GIF / image / video when available) |
-| **Weekly plans** | Deterministic plan engine (injury filters, equipment, split) + LLM enrichment + INDB meal grounding |
-| **Diet calories** | Mifflin–St Jeor BMR/TDEE; if height/weight missing, uses India age/sex midpoints (marked approximate) |
-| **Progress** | Save plan, log workouts, streak / reminder email |
-
----
-
-## How it works (architecture)
+## End-to-end process flow
 
 ```text
-React (Chat / Plan / Progress)
-        │  HTTP JSON
-        ▼
-FastAPI routers          ← thin HTTP layer only
-        │
-        ▼
-LangGraph conversation agent (ReAct + tools)
-   • answer_fitness_question  → guideline Qdrant + exercise semantic search
-   • update_profile           → validated profile slots
-   • generate_plan            → plan pipeline (always filtered / grounded)
-   • save / log / progress    → MCP + SQLite
-        │
-        ├── Qdrant: fitness_guidelines (chunked PDFs)
-        ├── Qdrant: exercise_semantic  (one vector per exercise)
-        ├── SQLite: exercises, users, plans, workouts, nutrition_items
-        └── Optional PLAN_AGENTIC=1: second LangGraph retrieve/validate loop
-            (draft discarded; final plan always from plan_generator)
+┌─────────────┐     HTTP JSON      ┌──────────────┐
+│  React UI   │ ─────────────────► │   FastAPI    │
+│ Chat / Plan │ ◄───────────────── │   routers    │
+│ / Progress  │                    └──────┬───────┘
+└─────────────┘                           │
+                                          ▼
+                               ┌─────────────────────┐
+                               │ LangGraph ReAct     │
+                               │ conversation agent  │
+                               │ (tool-calling loop) │
+                               └──────────┬──────────┘
+                                          │
+          ┌───────────────┬───────────────┼───────────────┬──────────────┐
+          ▼               ▼               ▼               ▼              ▼
+   answer_fitness   update_profile   generate_plan   save / email   log / progress
+   _question              │               │               │              │
+          │               │               │               ▼              ▼
+          │               ▼               │         SQLite + SMTP   SQLite
+          │         ProfileStore          │
+          │    (validated slots)          │
+          ▼                               ▼
+   ┌─────────────┐              ┌──────────────────┐
+   │ Text RAG     │              │  plan_generator   │
+   │ MiniLM +    │              │  1. schedule      │
+   │ CLIP images │              │  2. LLM enrich    │
+   └─────────────┘              │  3. INDB ground   │
+          │                     └──────────────────┘
+          ▼                               │
+   Qdrant collections                     ▼
+   • fitness_guidelines            Plan JSON → UI tabs
+   • guideline_images              Workout / Nutrition / Safety
+   • exercise_semantic
 ```
 
-### Two LangGraphs
+---
 
-1. **Conversation agent** (`backend/app/conversation/agent.py`) — every chat turn (Q&A, profile, plan, save).
-2. **Plan agent** (`backend/app/services/plan_agent.py`) — optional (`PLAN_AGENTIC=1`); never returns raw agent JSON as the user plan.
+## 1. User chat flow
 
-### Turn intents (chat Q&A)
+| Step | What happens |
+|------|----------------|
+| **Start** | `POST /api/conversation/start` → `thread_id` + greeting |
+| **Each message** | `POST /api/conversation/message` → agent chooses tools |
+| **Q&A** | `answer_fitness_question` → guideline text (+ yoga photos or exercise GIFs when appropriate) |
+| **Profile** | `update_profile` → validated slots (goal, body parts, equipment, health flags, …) |
+| **Plan** | When profile is safe/complete → `generate_plan` → full plan attached to the response |
+| **Save** | Optional name/email → persist + email; Plan / Progress tabs update |
+
+The agent decides the path. Plans are **never invented in chat prose** — only via `generate_plan`.
+
+### Chat intents (Q&A routing)
 
 | Intent | Behaviour |
 |--------|-----------|
-| `info` | Guidelines only (e.g. water, carbs) — no exercise GIF spam |
-| `exercise_qa` | Guidelines + a few targeted demos |
-| `plan` | Profile collection → `generate_plan` |
+| `info` | Guidelines only (diet, water, protocol tables) — no exercise GIF spam |
+| `exercise_qa` | Guidelines + a few targeted exercise demos |
+| `plan` | Collect profile → `generate_plan` (not one-off tips) |
+
+Media for yoga demos: text-page anchors first, then CLIP hybrid over booklet photos (`SRC009` / `SRC003`). Gym asks use the exercise catalog, not random PDF art.
+
+---
+
+## 2. Plan generation flow
+
+```text
+Profile + SQL/RAG filters
+        │
+        ▼
+┌───────────────────────────┐
+│ Retrieve guideline chunks │  ← Qdrant fitness_guidelines
+└─────────────┬─────────────┘
+              ▼
+┌───────────────────────────┐
+│ Schedule week (code)      │  ← equipment, injuries, split
+│ or skip if diet_only      │     yoga_only → bodyweight yoga week
+└─────────────┬─────────────┘
+              ▼
+┌───────────────────────────┐
+│ LLM enrichment            │  ← form tips, meal *names*, safety notes
+│ (no invented macros)      │
+└─────────────┬─────────────┘
+              ▼
+┌───────────────────────────┐
+│ Ground diet in INDB       │  ← real kcal/macros from nutrition_items
+│ Mifflin BMR/TDEE (code)   │     height/weight optional (India midpoints if missing)
+└─────────────┬─────────────┘
+              ▼
+     week_plan + diet_plan + safety_notes + citations
+```
+
+| `plan_mode` | Result |
+|-------------|--------|
+| `full` | 7-day workout + diet |
+| `diet_only` | Meals / nutrition only (no workout days) |
+| `yoga_only` | Yoga/asana week + light diet guidance |
+
+Optional: `PLAN_AGENTIC=1` runs a short retrieve/validate LangGraph loop first; the **draft is discarded** and the final plan always comes from `plan_generator`.
+
+---
+
+## 3. Data pipelines (offline, before serving)
+
+Exercises and guidelines are built separately. **Stop the API** before writing local Qdrant (single-writer lock).
+
+```text
+Exercise catalog                         Guidelines + images
+─────────────────                        ───────────────────
+fetch_external_sources.py                chunk_all_sources.py
+        │                                        │
+        ▼                                        ▼
+build_exercise_corpus.py                 extract_pdf_images.py  → static/guideline_images/
+        │                                        │
+        ▼                                        ▼
+load_db.py  → SQLite exercises           embed_and_store.py     → fitness_guidelines
+        │                                embed_images_clip.py   → guideline_images
+        ▼
+embed_exercises.py → exercise_semantic
+
+Optional: python -m app.scripts.load_nutrition_db  → nutrition_items (INDB)
+```
+
+---
+
+## 4. Runtime architecture
+
+| Layer | Role |
+|-------|------|
+| **Frontend** (`frontend/`) | Chat, Plan (Workout / Nutrition / Safety), Progress |
+| **Routers** | Thin HTTP: conversation, plan, workout, exercises |
+| **Conversation agent** | ReAct tools: Q&A, profile, plan, save, reminders |
+| **Services** | RAG, NLU, exercise selection, plan generator, anthropometrics |
+| **MCP tools** | `save_plan`, calories, log workout, progress, email |
+| **Stores** | Qdrant (vectors), SQLite (exercises, plans, nutrition, logs) |
+
+LLM: Groq primary, Azure OpenAI failover when configured.
 
 ---
 
@@ -58,103 +148,65 @@ LangGraph conversation agent (ReAct + tools)
 
 ```text
 adaptive-fitness-planner/
-├── backend/                 # FastAPI + agents + RAG + MCP
-│   ├── main.py              # App entry (uvicorn)
-│   ├── app/conversation/    # Chat agent, profile, filters
-│   ├── app/services/        # Plan, RAG, NLU, exercises, anthropometrics
-│   ├── app/mcp_server/      # save_plan, calories, log_workout, …
-│   ├── app/routers/         # /api/conversation, /plan, /workout, /exercises
-│   ├── rag/                 # Chunk/embed scripts + local Qdrant
-│   └── scripts/             # Exercise corpus build + load_db
-├── frontend/                # Vite + React + Tailwind
-├── evals/                   # RAG / exercise / agent slot evals
-├── data/                    # Guideline sources, media
-├── main_scripts/            # Curated code snapshot + MODULE_DOCUMENTATION.md
-└── SETUP_AND_TEST_GUIDE.md  # Detailed data-pipeline runbook
+├── backend/
+│   ├── main.py                 # uvicorn entry
+│   ├── app/conversation/       # agent + profile store
+│   ├── app/services/           # plan, RAG, NLU, exercises, nutrition
+│   ├── app/mcp_server/         # save / email / progress tools
+│   ├── app/routers/            # HTTP API
+│   ├── rag/                    # chunk / embed / CLIP scripts + qdrant_local
+│   └── scripts/                # exercise corpus → SQLite
+├── frontend/                   # Vite + React + Tailwind
+├── evals/                      # RAG / exercise / agent evals
+├── data/                       # sources & media (large files gitignored)
+├── .env.example                # copy to .env — never commit secrets
+└── requirements.txt
 ```
-
-
-## Prerequisites
-
-- Python 3.10+
-- Node.js 18+ (frontend)
-- Groq API key (default LLM)
-- Disk space for Qdrant indexes and exercise media (local)
 
 ---
 
 ## Quick start
 
-### 1. Backend
+### Prerequisites
+
+- Python 3.10+, Node.js 18+
+- Groq API key (Azure optional failover)
+- Disk for Qdrant + exercise media
+
+### Backend
 
 ```bash
 cd backend
-python3 -m venv ../env          # or use existing env/
-source ../env/bin/activate      # Windows: ..\env\Scripts\activate
-pip install -r requirements.txt # or deps listed in SETUP_AND_TEST_GUIDE.md
+python3 -m venv ../env
+source ../env/bin/activate          # Windows: ..\env\Scripts\activate
+pip install -r requirements.txt
 ```
 
-Create a root `.env` (never commit this):
+Copy `.env.example` → `.env` (repo root and/or `backend/.env`):
 
 ```env
 LLM_PROVIDER=groq
 GROQ_API_KEY=your_key_here
 GROQ_MODEL=llama-3.3-70b-versatile
-
-# Optional
-# SMTP_HOST=... SMTP_USER=... SMTP_PASS=...
+# Optional: AZURE_OPENAI_*, SMTP_*
 ```
 
-### 2. Data pipeline 
-
-Exercises and guidelines are **separate** pipelines:
-
 ```bash
-# Exercises → SQLite + exercise_semantic
-python scripts/fetch_external_sources.py
-python scripts/build_exercise_corpus.py
-python scripts/load_db.py
-python rag/embed_exercises.py
-
-# Guidelines → fitness_guidelines
-python rag/chunk_all_sources.py
-python rag/embed_and_store.py
-
-# Optional: Indian Nutrient Databank for meal macros
-# python -m app.scripts.load_nutrition_db
-```
-
-
-### 3. Run API
-
-```bash
-cd backend
 uvicorn main:app --reload --port 8000
 ```
 
 - Health: http://localhost:8000/health  
 - Swagger: http://localhost:8000/docs  
 
-### 4. Frontend
+### Frontend
 
 ```bash
 cd frontend
 npm install
-# optional: echo 'VITE_API_URL=http://localhost:8000' > .env
 npm run dev
 ```
 
-Open the URL Vite prints (usually http://localhost:5173) → **Chat** tab.
-
----
-
-## Typical user flow
-
-1. `POST /api/conversation/start` → `thread_id` + greeting  
-2. Chat: ask facts or request a plan → agent tools update profile / answer with RAG  
-3. When slots + health flags are complete → `generate_plan` builds week + diet  
-4. Optional save/email → Plan & Progress tabs  
-
+Open the Vite URL (usually http://localhost:5173) → **Chat**.
 
 ---
 
@@ -167,6 +219,17 @@ Open the URL Vite prints (usually http://localhost:5173) → **Chat** tab.
 | Workout | `POST /api/workout/log`, `GET /api/workout/progress/{email}`, `POST /api/workout/reminder` |
 | Exercises | `POST /api/exercises/search`, `GET /api/exercises/taxonomy`, `GET /api/exercises/{id}` |
 
+Chat already returns `plan` when generation succeeds — the Plan tab does not need a separate generate call for the normal UI path.
+
+---
+
+## Safety rules (enforced in code)
+
+- Health flags must be confirmed before `generate_plan` (`none` or real flags).
+- Injuries → hard body-part exclusions in exercise selection.
+- Calorie math is Mifflin–St Jeor in code; meal macros come from INDB lookup, not LLM guesses.
+- Estimated height/weight (India age/sex midpoints) is labeled in the Nutrition UI.
+
 ---
 
 ## Evals
@@ -174,31 +237,18 @@ Open the URL Vite prints (usually http://localhost:5173) → **Chat** tab.
 ```bash
 cd backend && source ../env/bin/activate
 python ../evals/run_all_evals.py
-# or: run_rag_eval.py | run_exercise_eval.py | run_agent_eval.py
+# or: run_rag_eval.py | run_multimodal_rag_eval.py | run_exercise_eval.py | run_agent_eval.py
 ```
 
-Measures Hit@k / MRR, generation groundedness, exercise compliance, and NLU slot accuracy. Suites exit non-zero when scores are below thresholds.
+Stop the API first if evals open the same local Qdrant path.
 
 ---
 
-## Important environment flags
+## Useful flags
 
 | Variable | Meaning |
 |----------|---------|
-| `PLAN_AGENTIC=1` | Run optional plan-agent tool loop before one deterministic `generate_plan` |
-| `SEMANTIC_LLM_EXTRACT=1` | LLM JSON extract for demographics/health in NLU (default off) |
+| `PLAN_AGENTIC=1` | Optional plan-agent loop before one deterministic `generate_plan` |
+| `SEMANTIC_LLM_EXTRACT=1` | Extra LLM JSON extract in NLU (default off) |
 | `QDRANT_PATH` | Override local Qdrant directory |
 | `FRONTEND_URL` | Extra CORS origin |
-
----
-
-## Safety notes
-
-- Plans are not invented in chat prose — only via `generate_plan`.  
-- Health flags must be confirmed before planning (`none` or real flags).  
-- Injuries map to hard body-part exclusions in SQL/semantic selection.  
-- Calorie math is code (Mifflin); estimated size is labeled in the Diet UI.
-
----
-
-

@@ -72,13 +72,24 @@ def build_rag_queries(profile: Dict) -> List[str]:
     notes   = profile.get("custom_health_notes", []) or []
     sex     = profile.get("sex", "") or profile.get("gender", "")
     age     = profile.get("age", "")
-    diet_only = (profile.get("plan_mode") or "full") == "diet_only"
+    mode = profile.get("plan_mode") or "full"
+    diet_only = mode == "diet_only"
+    yoga_only = mode == "yoga_only"
 
     queries = [
         f"{goal} diet and nutrition for {sex} age {age} India",
         f"healthy Indian meal pattern {goal}",
     ]
-    if not diet_only:
+    if yoga_only:
+        queries = [
+            "Common Yoga Protocol asanas pranayama daily practice sequence",
+            f"yoga practice guidelines for {sex} age {age} India",
+            "yoga breathing techniques benefits and precautions",
+            f"healthy Indian meal pattern for yoga lifestyle {goal}",
+        ]
+        if parts:
+            queries.append(f"yoga stretches and asanas for {parts}")
+    elif not diet_only:
         queries.insert(0, f"{goal} exercise recommendations for {sex} age {age}")
         if parts:
             queries.append(f"physical activity guidelines for {parts}")
@@ -93,7 +104,11 @@ def build_rag_queries(profile: Dict) -> List[str]:
         queries.append("carbohydrate intake diabetes Indian diet")
     if "knee_injury" in flags or "back_injury" in flags:
         if not diet_only:
-            queries.append("exercise modifications joint injury rehabilitation")
+            queries.append(
+                "yoga modifications joint injury"
+                if yoga_only else
+                "exercise modifications joint injury rehabilitation"
+            )
     if "obesity" in flags:
         queries.append("physical activity obesity weight management India guidelines")
 
@@ -158,6 +173,9 @@ def select_and_schedule(profile: Dict) -> List[Dict]:
     fitness_lvl = profile.get("fitness_level", "beginner")
     equipment   = profile.get("available_equipment", [])
     health_flags= profile.get("health_flags", [])
+    yoga_only   = (profile.get("plan_mode") or "full") == "yoga_only"
+    if yoga_only:
+        equipment = ["body only"]
 
     from app.conversation.state import injury_excluded_body_parts
 
@@ -169,12 +187,12 @@ def select_and_schedule(profile: Dict) -> List[Dict]:
 
     exercises_per_session = {15: 3, 30: 5, 45: 7, 60: 9}.get(time_min, 5)
 
-    if goal in ("build_muscle", "improve_strength"):
+    if yoga_only or goal == "improve_flexibility":
+        sets, reps, rest = 2, "30–45s hold / 5 breaths", 15
+    elif goal in ("build_muscle", "improve_strength"):
         sets, reps, rest = 4, "8-10", 90
     elif goal == "lose_fat":
         sets, reps, rest = 3, "15-20", 30
-    elif goal == "improve_flexibility":
-        sets, reps, rest = 2, "30s hold", 15
     else:
         sets, reps, rest = 3, "12-15", 45
     if fitness_lvl == "beginner":
@@ -194,6 +212,7 @@ def select_and_schedule(profile: Dict) -> List[Dict]:
         equipment=equipment,
         exclude_body_parts=exclude_body_parts,
         exercises_per_session=exercises_per_session,
+        yoga_mode=yoga_only,
     )
 
     # Cycle through day types across the week so each recurs the right
@@ -214,7 +233,11 @@ def select_and_schedule(profile: Dict) -> List[Dict]:
                 "focus": "recovery",
                 "exercises": [],
                 "duration_minutes": 0,
-                "notes": "Active rest: light walking, stretching, or yoga. Stay hydrated."
+                "notes": (
+                    "Active rest: gentle stretch, pranayama, or short walk. Stay hydrated."
+                    if yoga_only else
+                    "Active rest: light walking, stretching, or yoga. Stay hydrated."
+                )
             })
             continue
 
@@ -542,6 +565,54 @@ def _clean_dish_query(suggestion: str) -> str:
     return re.sub(r'\s+', ' ', s).strip()
 
 
+def _as_str_list(value) -> List:
+    """Normalize LLM list/string/dict tip fields into a flat list of strings."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        t = value.strip()
+        return [t] if t else []
+    if isinstance(value, list):
+        out = []
+        for v in value:
+            if isinstance(v, str) and v.strip():
+                out.append(v.strip())
+            elif isinstance(v, dict):
+                name = v.get("name") or v.get("dish") or v.get("text")
+                if isinstance(name, str) and name.strip():
+                    out.append(name.strip())
+        return out
+    if isinstance(value, dict):
+        return [s for v in value.values() for s in _as_str_list(v)]
+    return []
+
+
+def _normalize_meals(meals) -> List[Dict]:
+    """Accept list-or-dict meal payloads from the LLM without crashing grounding."""
+    if not meals:
+        return []
+    if isinstance(meals, dict):
+        normalized = []
+        for key, val in meals.items():
+            if isinstance(val, dict):
+                row = dict(val)
+                row.setdefault("meal", key)
+                normalized.append(row)
+            else:
+                normalized.append({"meal": key, "suggestions": _as_str_list(val)})
+        meals = normalized
+    if not isinstance(meals, list):
+        return []
+    out = []
+    for meal in meals:
+        if not isinstance(meal, dict):
+            continue
+        row = dict(meal)
+        row["suggestions"] = _as_str_list(row.get("suggestions"))
+        out.append(row)
+    return out
+
+
 def ground_diet_plan_in_nutrition_db(diet_plan: Dict, calorie_target: Optional[Dict]) -> Dict:
     """
     Replace LLM-guessed meal/day nutrition numbers with real values looked
@@ -551,12 +622,16 @@ def ground_diet_plan_in_nutrition_db(diet_plan: Dict, calorie_target: Optional[D
     is silently invented, mirroring the same "verify, don't trust" approach
     used for the exercise/financial-statement accuracy checks elsewhere.
     """
-    meals = diet_plan.get("meals", [])
+    if not isinstance(diet_plan, dict):
+        diet_plan = {}
+    meals = _normalize_meals(diet_plan.get("meals"))
+    diet_plan["india_specific_tips"] = _as_str_list(diet_plan.get("india_specific_tips"))
+    diet_plan["foods_to_avoid"] = _as_str_list(diet_plan.get("foods_to_avoid"))
     total_kcal = total_protein = total_carb = total_fat = 0.0
     any_verified = False
 
     for meal in meals:
-        suggestions = meal.get("suggestions", [])
+        suggestions = meal.get("suggestions") or []
         primary = suggestions[0] if suggestions else None
         match = get_verified_macros(_clean_dish_query(primary)) if primary else None
 
@@ -660,7 +735,9 @@ def generate_plan(
     Supports plan_mode="diet_only" (meals + safety only, empty week_plan).
     """
     plan_id = str(uuid.uuid4())
-    diet_only = (profile.get("plan_mode") or "full") == "diet_only"
+    mode = profile.get("plan_mode") or "full"
+    diet_only = mode == "diet_only"
+    yoga_only = mode == "yoga_only"
     sql_filters = sql_filters or {}
 
     # Stash exclusions so select_and_schedule / resolve_exercise_sets honour them
@@ -668,6 +745,8 @@ def generate_plan(
     profile["_sql_filters"] = sql_filters
     if sql_filters.get("exclude_body_parts"):
         profile["_sql_exclude_body_parts"] = sql_filters["exclude_body_parts"]
+    if yoga_only and not profile.get("available_equipment"):
+        profile["available_equipment"] = ["body only"]
 
     rag_queries = build_rag_queries(profile)
     guidelines = retrieve_multi_query(rag_queries, rag_filters or {}, top_k_per_query=4)
@@ -742,9 +821,10 @@ def generate_plan(
             )
         ]
 
+    plan_mode_out = "diet_only" if diet_only else ("yoga_only" if yoga_only else "full")
     plan = {
         "plan_id": plan_id,
-        "plan_mode": "diet_only" if diet_only else "full",
+        "plan_mode": plan_mode_out,
         "generated_at": datetime.utcnow().isoformat(),
         "profile_summary": {
             "goal": profile.get("goal"),
@@ -762,7 +842,7 @@ def generate_plan(
                 profile.get("fitness_level"),
             ),
             "time_per_day_minutes": profile.get("time_per_day_minutes"),
-            "plan_mode": "diet_only" if diet_only else "full",
+            "plan_mode": plan_mode_out,
         },
         "week_plan": week_plan,
         "diet_plan": diet_plan,
@@ -775,6 +855,7 @@ def generate_plan(
             "workout_days": sum(1 for d in week_plan if d.get("type") == "workout"),
             "rest_days": sum(1 for d in week_plan if d.get("type") == "rest"),
             "diet_only": diet_only,
+            "yoga_only": yoga_only,
             "enrichment_failed": enrichment_failed,
             "thin_program": thin_program,
             "has_bmr": bool(diet_plan.get("bmr") or diet_plan.get("calorie_target", {}).get("bmr")),

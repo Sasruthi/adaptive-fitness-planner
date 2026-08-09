@@ -73,8 +73,24 @@ def resolve_split(target_body_parts: List[str]) -> Dict:
     return {"split_type": "part_focus", "day_types": parts}
 
 
-def _build_day_type_query(day_type: str, fitness_level: str, equipment_note: str) -> str:
-    if day_type == "Full Body":
+def _build_day_type_query(
+    day_type: str,
+    fitness_level: str,
+    equipment_note: str,
+    *,
+    yoga_mode: bool = False,
+) -> str:
+    if yoga_mode:
+        if day_type == "Full Body":
+            hint = (
+                "yoga asanas stretches mobility: sun salutation, downward dog, "
+                "cobra, cat-cow, child's pose, warrior, bridge, forward fold — "
+                "bodyweight yoga practice"
+            )
+        else:
+            base = BODY_PART_QUERY_HINTS.get(day_type, day_type)
+            hint = f"yoga asana and stretch variations for {base}"
+    elif day_type == "Full Body":
         if (fitness_level or "").lower() == "beginner":
             hint = (
                 "beginner full body: push-ups, bodyweight squats, glute bridges, "
@@ -95,6 +111,7 @@ def resolve_exercise_sets(
     equipment: Optional[List[str]],
     exclude_body_parts: Optional[List[str]],
     exercises_per_session: int,
+    yoga_mode: bool = False,
 ) -> Dict[str, List[Dict]]:
     """
     Resolve one fixed, semantically-matched exercise set per day type.
@@ -109,22 +126,24 @@ def resolve_exercise_sets(
             (e or "").lower().strip() in {"none", "body only", "bodyweight", "body weight", ""}
             for e in equipment
         )
+        or yoga_mode
     )
     equipment_note = (
-        "bodyweight only, no equipment" if has_no_equip
+        "bodyweight yoga mat only, no gym machines" if yoga_mode or has_no_equip
         else f"using {', '.join(equipment)}"
     )
     level = (fitness_level or "beginner").lower()
+    equip_filter = ["body only", "none"] if (yoga_mode or has_no_equip) else (equipment or ["body only", "none"])
 
     resolved: Dict[str, List[Dict]] = {}
     for day_type in day_types:
-        query = _build_day_type_query(day_type, level, equipment_note)
+        query = _build_day_type_query(day_type, level, equipment_note, yoga_mode=yoga_mode)
         wanted_parts = None if day_type == "Full Body" else [day_type]
 
         hits = retrieve_exercise_semantic(
             query,
             top_k=max(exercises_per_session * 4, 12),
-            equipment=equipment if equipment else ["body only", "none"],
+            equipment=equip_filter,
             body_parts=wanted_parts,
             prefer_media=True,
             prefer_difficulty=level,
@@ -150,8 +169,8 @@ def resolve_exercise_sets(
 
         if not hits:
             sql_filters: Dict = {}
-            if equipment:
-                sql_filters["equipment__in"] = equipment
+            if equip_filter:
+                sql_filters["equipment__in"] = equip_filter
             if day_type != "Full Body":
                 sql_filters["body_part__in"] = [day_type]
             if exclude_body_parts:

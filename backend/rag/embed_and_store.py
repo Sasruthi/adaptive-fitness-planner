@@ -1,11 +1,13 @@
 """
-Adaptive Fitness Planner — Embedding + Qdrant Ingestion
-=========================================================
-Embeds all chunks from chunk_pipeline output and upserts into local Qdrant.
+Embed guideline text chunks into local Qdrant (fitness_guidelines).
 
-Embedding model: all-MiniLM-L6-v2 (384-dim, free, fast, runs on CPU)
-Vector store:    Qdrant (local in-memory for dev → swap to Docker/Cloud for prod)
-Collection:      fitness_guidelines
+Inputs:  data/.../chunks/all_chunks.json from chunk_all_sources.py
+Outputs: backend/rag/qdrant_local collection fitness_guidelines
+         (all-MiniLM-L6-v2, 384-dim, cosine)
+
+Stop the API before running — local Qdrant is single-writer.
+
+Run:  python backend/rag/embed_and_store.py
 """
 
 import json, time
@@ -107,6 +109,8 @@ for batch_idx in range(total_batches):
                 "section_title":chunk["section_title"],
                 "content_type": chunk["content_type"],
                 "char_count":   chunk["char_count"],
+                # Legacy same-page proximity photos (CLIP collection is preferred).
+                "image_urls":   chunk.get("image_urls") or [],
             }
         )
         points.append(point)

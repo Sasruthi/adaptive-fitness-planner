@@ -124,7 +124,7 @@ EXERCISE_ONLY_FIELDS = {
     "target_body_parts", "available_equipment", "fitness_level", "time_per_day_minutes",
 }
 
-PLAN_MODES = {"full", "diet_only"}
+PLAN_MODES = {"full", "diet_only", "yoga_only"}
 
 
 class Profile(BaseModel):
@@ -139,7 +139,7 @@ class Profile(BaseModel):
     available_equipment: List[str] = Field(default_factory=list)
     fitness_level: Optional[str] = None
     time_per_day_minutes: Optional[int] = None
-    # "full" = workout + diet; "diet_only" = meals/nutrition without exercise slots
+    # "full" = workout + diet; "diet_only" = meals only; "yoga_only" = yoga week + light diet
     plan_mode: str = "full"
 
     @field_validator("goal")
@@ -168,6 +168,10 @@ class Profile(BaseModel):
             "nutrition": "diet_only",
             "nutrition_only": "diet_only",
             "meals_only": "diet_only",
+            "yoga": "yoga_only",
+            "yogaonly": "yoga_only",
+            "yoga_plan": "yoga_only",
+            "yogic": "yoga_only",
             "workout": "full",
             "exercise": "full",
             "both": "full",
@@ -198,13 +202,23 @@ class Profile(BaseModel):
                 value = Profile._valid_plan_mode(value)
                 if str(raw_mode).strip().lower().replace("-", "_").replace(" ", "_") not in (
                     "full", "diet_only", "diet", "dietonly", "nutrition", "nutrition_only",
-                    "meals_only", "workout", "exercise", "both",
+                    "meals_only", "yoga", "yoga_only", "yogaonly", "yoga_plan", "yogic",
+                    "workout", "exercise", "both",
                 ) and value == "full" and str(raw_mode).lower() not in ("full",):
                     rejected["plan_mode"] = {
                         "got": raw_mode,
                         "valid_options": list(PLAN_MODES),
                     }
                     continue
+                # Yoga plans are mat/bodyweight by default
+                if value == "yoga_only" and not self.available_equipment:
+                    self.available_equipment = ["body only"]
+                    if "available_equipment" not in changed:
+                        changed.append("available_equipment")
+                if value == "yoga_only" and not self.goal:
+                    self.goal = "improve_flexibility"
+                    if "goal" not in changed:
+                        changed.append("goal")
 
             if key == "goal":
                 if value not in GOALS:
@@ -379,6 +393,7 @@ class SessionStore:
         self._plans: Dict[str, dict] = {}
         self._plan_confirmed: Dict[str, bool] = {}
         self._exercises: Dict[str, list] = {}
+        self._guideline_images: Dict[str, list] = {}   # NEW — CLIP-matched demo photos for this turn
         self._saved_plan_ids: Dict[str, int] = {}
 
     def get_profile(self, thread_id: str) -> Profile:
@@ -412,6 +427,15 @@ class SessionStore:
 
     def clear_exercises(self, thread_id: str):
         self._exercises.pop(thread_id, None)
+
+    def set_guideline_images(self, thread_id: str, images: list):
+        self._guideline_images[thread_id] = images or []
+
+    def get_guideline_images(self, thread_id: str) -> list:
+        return self._guideline_images.get(thread_id) or []
+
+    def clear_guideline_images(self, thread_id: str):
+        self._guideline_images.pop(thread_id, None)
 
 
 session_store = SessionStore()

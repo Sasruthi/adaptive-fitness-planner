@@ -1,25 +1,18 @@
 """
-Adaptive Fitness Planner — Unified Chunking Pipeline
-======================================================
-Single script that walks the entire project folder structure,
-detects each file type, applies the correct chunking strategy,
-attaches rich metadata from source_manifest.csv, and writes
-all chunks to chunks/all_chunks.json ready for embedding.
+Unified PDF/JSON chunking for guideline RAG and exercise DB prep.
 
-Folder structure handled:
-  RAW/india_guidelines/     → Tier 1 India PDFs  (primary RAG source)
-  RAW/global_generic/       → Tier 2 WHO PDFs    (fallback RAG source)
-  RAW/structured/           → JSON/TXT exercises  (DB only, NOT embedded)
-  RAW/authored/             → custom notes        (Tier 4, embedded if present)
-  MANIFESTS/                → CSV metadata        (skipped, used internally)
+Walks data/adaptive-fitness-planner-data/raw/**, applies a per-format
+chunk strategy, attaches metadata from source_manifest.csv, and writes
+chunks/all_chunks.json for embed_and_store.py.
 
-Chunking strategies:
-  PDF short structured  (≤30 pages, >60% text)  → page-level + sub-split
-  PDF long prose        (>30 pages, >60% text)  → section-aware sliding window
-  PDF image-heavy       (<40% text pages)       → page-level (text-only pages)
-  JSON exercise records                         → one chunk per exercise record
-  TXT (repo URLs)                               → skipped (not RAG content)
-  CSV                                           → row-grouped chunks with headers
+Also stamps image_urls onto chunks from pdf_images_map.json when present
+(same-page proximity; CLIP retrieval is authoritative for demos).
+
+Inputs:  raw PDFs/JSON under data/.../raw/, manifests/source_manifest.csv,
+         optional chunks/pdf_images_map.json
+Outputs: chunks/all_chunks.json  (list of chunk dicts with text + metadata)
+
+Run:  python backend/rag/chunk_all_sources.py
 """
 
 import csv, json, re, os
@@ -49,7 +42,12 @@ folders = {
 CHUNK_TARGET  = 800    # target chars per chunk
 CHUNK_OVERLAP = 150    # sentence overlap between consecutive chunks
 MIN_CHUNK     = 80     # discard anything shorter (headers, page numbers)
-MAX_CHUNK     = 1200   # hard ceiling — oversized chunks get sub-split
+MAX_CHUNK     = 1200   # hard ceiling — oversized non-table pages get sub-split
+# Booklet pages under this size stay whole even if slightly over MAX_CHUNK
+# (safety net when the layout table detector is uncertain).
+PAGE_KEEP_WHOLE_CHARS = 2800
+# Layout score threshold for page_looks_like_table() (0–1-ish).
+TABLE_LAYOUT_THRESHOLD = 0.55
 
 # ── Chunk dataclass ───────────────────────────────────────────────────────────
 @dataclass
@@ -73,6 +71,9 @@ class Chunk:
     # For JSON exercise records
     exercise_name: Optional[str] = None
     tags:          List[str]    = field(default_factory=list)
+    # Same-page demo photos from extract_pdf_images.py (legacy proximity
+    # fallback; CLIP retrieval is authoritative for chat UI).
+    image_urls:    List[str]    = field(default_factory=list)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -235,6 +236,102 @@ def safe_chunks(text: str) -> List[str]:
     return sliding_window(text)
 
 
+def page_looks_like_table(page: fitz.Page, threshold: float = TABLE_LAYOUT_THRESHOLD) -> bool:
+    """
+    Layout-based table detector (NOT keyword heuristics).
+
+    Uses PyMuPDF text dict geometry:
+      - multiple text pieces on the same baseline (multi-column rows)
+      - repeated x-positions across rows (column alignment)
+      - short cell-like lines vs long flowing prose
+      - optional horizontal drawn rules
+
+    Returns True when the page is table-/protocol-grid-like and should be
+    kept as a single chunk so titles (e.g. "50-65 Years") stay with the body.
+    """
+    try:
+        data = page.get_text("dict")
+    except Exception:
+        return False
+
+    lines = []
+    for block in data.get("blocks", []):
+        if block.get("type") != 0:
+            continue
+        for line in block.get("lines", []):
+            spans = line.get("spans") or []
+            if not spans:
+                continue
+            text = "".join(s.get("text", "") for s in spans).strip()
+            if not text:
+                continue
+            x0 = min(s["bbox"][0] for s in spans)
+            y0 = min(s["bbox"][1] for s in spans)
+            x1 = max(s["bbox"][2] for s in spans)
+            lines.append({
+                "text": text,
+                "x0": x0,
+                "y0": y0,
+                "len": len(text),
+                "w": x1 - x0,
+            })
+
+    if len(lines) < 6:
+        return False
+
+    lines.sort(key=lambda L: (round(L["y0"] / 3) * 3, L["x0"]))
+    rows: List[list] = []
+    cur = [lines[0]]
+    for L in lines[1:]:
+        if abs(L["y0"] - cur[0]["y0"]) <= 4:
+            cur.append(L)
+        else:
+            rows.append(cur)
+            cur = [L]
+    rows.append(cur)
+
+    multi_col_rows = sum(1 for r in rows if len(r) >= 2)
+    x_buckets: Dict[int, int] = defaultdict(int)
+    for L in lines:
+        x_buckets[int(round(L["x0"] / 8) * 8)] += 1
+    strong_cols = sum(1 for n in x_buckets.values() if n >= 3)
+    short_ratio = sum(1 for L in lines if L["len"] <= 40) / len(lines)
+    avg_len = sum(L["len"] for L in lines) / len(lines)
+
+    h_rules = 0
+    try:
+        for drawing in page.get_drawings():
+            for item in drawing.get("items", []):
+                if item[0] != "l":
+                    continue
+                p1, p2 = item[1], item[2]
+                if abs(p1.y - p2.y) < 1.5 and abs(p1.x - p2.x) > 40:
+                    h_rules += 1
+    except Exception:
+        pass
+
+    score = 0.0
+    score += min(multi_col_rows / max(len(rows), 1), 1.0) * 0.35
+    score += min(strong_cols / 4.0, 1.0) * 0.30
+    score += min(short_ratio, 1.0) * 0.25
+    if avg_len < 45:
+        score += 0.10
+    if h_rules >= 3:
+        score += 0.15
+
+    return score >= threshold
+
+
+def _with_heading_prefix(text: str, heading: Optional[str]) -> str:
+    """Keep section title on every sub-chunk so age-band queries still match."""
+    if not heading:
+        return text
+    h = heading.strip()
+    if not h or text.lstrip().startswith(h[: min(40, len(h))]):
+        return text
+    return f"{h}\n{text}"
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # 4. PDF CHUNKER
 # ══════════════════════════════════════════════════════════════════════════════
@@ -248,9 +345,14 @@ def analyse_pdf(doc: fitz.Document):
 def choose_pdf_strategy(total_pages: int, text_ratio: float) -> str:
     if text_ratio < 0.4:
         return "pdf_image"          # Mostly image — extract what text exists, page-level
-    if total_pages <= 30:
-        return "pdf_structured"     # Short structured (NIN booklet, press release, yoga)
-    return "pdf_prose"              # Long prose (FSSAI 136p, WHO, ICMR full guidelines)
+    # Prefer true page-level chunking for booklet-style PDFs (yoga protocol,
+    # Fit India, etc.). The old "pdf_prose" path (>30 pages) mashed later
+    # pages into the first section's page_number, so Common Yoga Protocol
+    # pages 17–44 were stored as page 16 and image captions for p37/p38
+    # could not be linked.
+    if total_pages <= 80:
+        return "pdf_structured"
+    return "pdf_prose"              # Very long prose only (ICMR/FSSAI/WHO)
 
 def chunk_pdf(pdf_path: Path, meta: dict, folder_name: str) -> List[Chunk]:
     doc = fitz.open(str(pdf_path))
@@ -285,16 +387,28 @@ def chunk_pdf(pdf_path: Path, meta: dict, folder_name: str) -> List[Chunk]:
             char_count=len(text),
         )
 
-    # ── pdf_structured / pdf_image: page-level, then sub-split if oversized ──
+    # ── pdf_structured / pdf_image: page-level; keep tables whole ─────────────
     if strategy in ("pdf_structured", "pdf_image"):
         for i, page in enumerate(doc):
             raw = clean_text(page.get_text())
             if len(raw) < MIN_CHUNK:
                 continue
             heading = detect_heading(raw)
+            keep_whole = (
+                strategy == "pdf_image"
+                or page_looks_like_table(page)
+                or len(raw) <= PAGE_KEEP_WHOLE_CHARS
+            )
+            if keep_whole:
+                chunks.append(make_chunk(raw, i + 1, heading, 0))
+                continue
+            # Long prose page only — sub-split, but stamp heading on each piece
             sub_texts = safe_chunks(raw)
             for si, st in enumerate(sub_texts):
-                chunks.append(make_chunk(st, i + 1, heading, si if len(sub_texts) > 1 else 0))
+                stamped = _with_heading_prefix(st, heading) if si > 0 else st
+                chunks.append(
+                    make_chunk(stamped, i + 1, heading, si if len(sub_texts) > 1 else 0)
+                )
 
     # ── pdf_prose: section-aware — accumulate pages between headings ──────────
     elif strategy == "pdf_prose":
@@ -532,6 +646,27 @@ def run():
                 stats[folder_name]["files"] += 1
                 stats[folder_name]["chunks"] += len(chunks)
                 print(f"    → {len(chunks)} chunks\n")
+
+    # Stamp same-page demo photo URLs from extract_pdf_images.py if present.
+    images_map_path = CHUNK_DIR / "pdf_images_map.json"
+    images_map: Dict[str, Dict[str, List[str]]] = {}
+    if images_map_path.exists():
+        try:
+            images_map = json.loads(images_map_path.read_text(encoding="utf-8"))
+        except Exception as e:
+            print(f"[WARN] could not load {images_map_path}: {e}")
+    if images_map:
+        stamped = 0
+        for c in all_chunks:
+            urls: List[str] = []
+            if c.page_number is not None:
+                urls = list(
+                    images_map.get(c.source_id, {}).get(str(int(c.page_number)), []) or []
+                )
+            c.image_urls = urls
+            if urls:
+                stamped += 1
+        print(f"\nAttached image_urls to {stamped} chunk(s) from {images_map_path.name}")
 
     # ── Save ────────────────────────────────────────────────────────────────
     out_path = CHUNK_DIR / "all_chunks.json"

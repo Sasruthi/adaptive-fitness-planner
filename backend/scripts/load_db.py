@@ -2,20 +2,8 @@
 FILE LOCATION: backend/scripts/load_db.py
 
 Load the merged exercise corpus + derived taxonomy into the database.
-
-REPLACES the old version of this script, which had two problems:
-  1. MERGED_DIR/RAW_DIR pointed at /home/claude/... — a path from a
-     previous Claude sandbox session, not anything that exists in your
-     project. It also expected merged_exercises_confident.csv /
-     merged_exercises_needs_review.csv, which you don't have.
-  2. load_taxonomy() opened bodyParts.json / equipments.json /
-     muscles.json — files that don't exist. Taxonomy is now DERIVED
-     from the merged exercise data instead (see build_exercise_corpus.py),
-     which is both simpler and guaranteed to stay in sync with what's
-     actually in the Exercise table.
-
 Run in order:
-    python scripts/fetch_external_sources.py     # once, or in CI
+    python scripts/fetch_external_sources.py    
     python scripts/build_exercise_corpus.py
     python scripts/load_db.py
 """
